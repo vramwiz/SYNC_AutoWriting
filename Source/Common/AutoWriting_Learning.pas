@@ -91,7 +91,7 @@ begin
           end;
         end;
       end;
-      Glyph.Strokes:=Paths; Glyph.Learned:=True; PrepareGlyphTiming(Glyph); Result:=True;
+      Glyph.Strokes:=Paths; Glyph.Learned:=True; Glyph.ReferenceUsed:=False; PrepareGlyphTiming(Glyph); Result:=True;
     except on E: Exception do Warning:=Glyph.Character+': '+E.Message end;
   finally V.Free; Lock.Release end;
 end;
@@ -123,7 +123,7 @@ begin
     TempName:=FileName+'.'+TGUID.NewGuid.ToString+'.tmp';
     TFile.WriteAllText(TempName,J.ToJSON,TEncoding.UTF8);
     if not MoveFileEx(PChar(TempName),PChar(FileName),MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then RaiseLastOSError;
-    TempName:=''; Glyph.Learned:=True; TInterlocked.Increment(Revision);
+    TempName:=''; Glyph.Learned:=True; Glyph.ReferenceUsed:=False; TInterlocked.Increment(Revision);
   finally
     try
       if (TempName<>'') and TFile.Exists(TempName) then

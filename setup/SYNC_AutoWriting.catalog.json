@@ -18,6 +18,21 @@
                                                 }
                                             ],
                              "licenseBody":  null
+                         },
+                         {
+                             "type":  "CC-BY-SA-3.0",
+                             "isCustom":  false,
+                             "copyrights":  [
+                                                {
+                                                    "years":  "2009-2026",
+                                                    "holder":  "Ulrich Apel (KanjiVG)"
+                                                },
+                                                {
+                                                    "years":  "2026",
+                                                    "holder":  "VRAMの魔術師 (stroke reference adaptation)"
+                                                }
+                                            ],
+                             "licenseBody":  null
                          }
                      ],
         "tags":  [
@@ -73,6 +88,30 @@
                                             {
                                                 "action":  "delete",
                                                 "path":  "{pluginsDir}/SYNC_AutoWriting/ThirdParty/LICENSE.AviUtl2-SDK.txt"
+                                            },
+                                            {
+                                                "action":  "delete",
+                                                "path":  "{pluginsDir}/SYNC_AutoWriting/ThirdParty/LICENSE.CC-BY-SA-3.0.txt"
+                                            },
+                                            {
+                                                "action":  "delete",
+                                                "path":  "{pluginsDir}/SYNC_AutoWriting/Data/StrokeReference/StrokeReference.bin"
+                                            },
+                                            {
+                                                "action":  "delete",
+                                                "path":  "{pluginsDir}/SYNC_AutoWriting/Data/StrokeReference/NOTICE.md"
+                                            },
+                                            {
+                                                "action":  "delete",
+                                                "path":  "{pluginsDir}/SYNC_AutoWriting/Data/StrokeReference/Manifest.json"
+                                            },
+                                            {
+                                                "action":  "delete",
+                                                "path":  "{pluginsDir}/SYNC_AutoWriting/Data/StrokeReference/UPSTREAM-NOTICE.txt"
+                                            },
+                                            {
+                                                "action":  "delete",
+                                                "path":  "{pluginsDir}/SYNC_AutoWriting/Data/StrokeReference/UPSTREAM-LICENSE.txt"
                                             }
                                         ]
                       },
@@ -83,7 +122,7 @@
                             "file":  [
                                          {
                                              "path":  "{pluginsDir}/SYNC_AutoWriting/SYNC_AutoWriting.auf2",
-                                             "XXH3_128":  "f079ab96718cccce4bcbab49483465de"
+                                             "XXH3_128":  "f6dead362b8e32ab90a020dad8ae5210"
                                          }
                                      ]
                         }

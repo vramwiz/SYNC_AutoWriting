@@ -120,8 +120,8 @@ begin
     SetLength(Result.Mask,Result.Width*Result.Height);
     for Y:=0 to Result.Height-1 do for X:=0 to Result.Width-1 do
       Result.Mask[Y*Result.Width+X]:=Min(255,(Integer(Bytes[Y*Stride+X])*255+32) div 64);
-    InferGlyphStrokes(Result);
-    LoadGlyphLearning(Result,Warning);
+    // ユーザー学習を最初に検索する。自動推定・参照データから保存を作らない。
+    if not LoadGlyphLearning(Result,Warning) then InferGlyphStrokes(Result);
     if Warning<>'' then FWarnings:=FWarnings+' 学習読み込み: '+Warning;
   except Result.Free; raise end;
 end;

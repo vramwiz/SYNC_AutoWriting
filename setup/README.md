@@ -30,8 +30,17 @@ SYNC_AutoWriting/
   THIRD_PARTY_NOTICES.md
   ThirdParty/
     LICENSE.AviUtl2-SDK.txt
+    LICENSE.CC-BY-SA-3.0.txt
+  Data/StrokeReference/
+    StrokeReference.bin
+    NOTICE.md
+    Manifest.json
+    UPSTREAM-NOTICE.txt
+    UPSTREAM-LICENSE.txt
 ```
 
-同梱READMEはプロジェクトルートの`README.md`から生成します。画像・GIFとZIP外の開発資料へのリンクは、その公開バージョンのGitHubタグを参照します。本体と同じ5ファイルをJSONのアンインストール対象へ登録します。
+同梱READMEはプロジェクトルートの`README.md`から生成します。画像・GIFとZIP外の開発資料へのリンクは、その公開バージョンのGitHubタグを参照します。11ファイルすべてをJSONのアンインストール対象へ登録します。
+
+参照データはCC BY-SA 3.0です。AUF2には同一データを埋め込み、実行時はその不変のコピーを使います。配布ZIPの`.bin`は再利用・改変できる独立したデータです。梱包時には`.bin`の全バイトがAUF2へ埋め込まれていることも確認し、異なるデータや変更前のAUF2との混在を拒否します。
 
 バッチはビルドやアプリの起動、GitHubへの公開を行いません。作成後はZIPの内容・本体のバージョン・JSONの公開日を確認し、GitHubリリースのタグを`v1.0.0`に合わせてZIPとJSONを公開します。

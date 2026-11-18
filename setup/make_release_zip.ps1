@@ -109,6 +109,35 @@ try {
         'LICENSE' = Join-Path $projectDir 'LICENSE'
         'THIRD_PARTY_NOTICES.md' = $tempNotices
         'ThirdParty/LICENSE.AviUtl2-SDK.txt' = Join-Path $projectDir 'ThirdParty\LICENSE.AviUtl2-SDK.txt'
+        'ThirdParty/LICENSE.CC-BY-SA-3.0.txt' = Join-Path $projectDir 'ThirdParty\LICENSE.CC-BY-SA-3.0.txt'
+        'Data/StrokeReference/StrokeReference.bin' = Join-Path $projectDir 'Data\StrokeReference\StrokeReference.bin'
+        'Data/StrokeReference/NOTICE.md' = Join-Path $projectDir 'Data\StrokeReference\NOTICE.md'
+        'Data/StrokeReference/Manifest.json' = Join-Path $projectDir 'Data\StrokeReference\Manifest.json'
+        'Data/StrokeReference/UPSTREAM-NOTICE.txt' = Join-Path $projectDir 'Data\StrokeReference\UPSTREAM-NOTICE.txt'
+        'Data/StrokeReference/UPSTREAM-LICENSE.txt' = Join-Path $projectDir 'Data\StrokeReference\UPSTREAM-LICENSE.txt'
+    }
+    # 外部データと本体内の不変データを照合し、古いAUF2との誤梱包を拒否する。
+    if (-not ('AutoWriting.ReferencePackageGuard' -as [type])) {
+        Add-Type -TypeDefinition @'
+namespace AutoWriting {
+  public static class ReferencePackageGuard {
+    public static bool Contains(byte[] binary, byte[] data) {
+      for (int i = 0; i <= binary.Length - data.Length; i++) {
+        if (binary[i] != data[0] || binary[i+1] != data[1]) continue;
+        int k = 2;
+        while (k < data.Length && binary[i+k] == data[k]) k++;
+        if (k == data.Length) return true;
+      }
+      return false;
+    }
+  }
+}
+'@
+    }
+    $referencePath = $packageFiles['Data/StrokeReference/StrokeReference.bin']
+    $referenceBytes = [IO.File]::ReadAllBytes($referencePath)
+    if (-not [AutoWriting.ReferencePackageGuard]::Contains([IO.File]::ReadAllBytes($tempPlugin), $referenceBytes)) {
+        throw 'Release AUF2 does not contain the packaged stroke reference. Rebuild it from the same generated data.'
     }
     # 開発用と配布用で同じライセンス配置を使用する。
     $notices = [IO.File]::ReadAllText((Join-Path $projectDir 'THIRD_PARTY_NOTICES.md'))

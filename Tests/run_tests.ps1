@@ -5,6 +5,7 @@
     [switch]$DemoOnly,
     [switch]$DpiOnly,
     [switch]$NoUI,
+    [switch]$LayoutOnly,
     [switch]$GlyphSamplesOnly,
     [string]$GlyphSampleText = '自'
 )
@@ -30,6 +31,7 @@ try {
     elseif ($Demo) { $testArguments += '--demo' }
     elseif ($GlyphSamplesOnly) { $testArguments += @('--glyph-samples', $GlyphSampleText) }
     elseif ($NoUI) { $testArguments += '--no-ui' }
+    elseif ($LayoutOnly) { $testArguments += '--layout-only' }
     & (Join-Path $buildDirectory "$testProgram.exe") @testArguments
     if ($LASTEXITCODE -ne 0) { throw 'Production AUF2 tests failed.' }
 }

@@ -94,7 +94,7 @@
         <Manifest_File>(なし)</Manifest_File>
         <AppDPIAwarenessMode>none</AppDPIAwarenessMode>
         <DCC_ExeOutput>C:\ProgramData\aviutl2\Plugin\SYNC_AutoWriting\</DCC_ExeOutput>
-        <Debugger_HostApplication>D:\aviutl2_v2.1.17\aviutl2.exe</Debugger_HostApplication>
+        <Debugger_HostApplication>D:\aviutl2_v2.1.16\aviutl2.exe</Debugger_HostApplication>
     </PropertyGroup>
     <ItemGroup>
         <DelphiCompile Include="$(MainSource)">
@@ -106,10 +106,15 @@
         <DCCReference Include="Source\Common\AutoWriting_Vertices.pas"/>
         <DCCReference Include="Source\Common\AutoWriting_Branches.pas"/>
         <DCCReference Include="Source\Common\AutoWriting_Reveal.pas"/>
+        <DCCReference Include="Source\Common\AutoWriting_ReferenceData.pas"/>
+        <DCCReference Include="Source\Common\AutoWriting_ReferenceOrder.pas"/>
+        <DCCReference Include="Source\Common\AutoWriting_Preview.pas"/>
+        <DCCReference Include="Source\Common\AutoWriting_ReferenceFit.pas"/>
         <DCCReference Include="Source\Common\AutoWriting_Inference.pas"/>
         <DCCReference Include="Source\Common\AutoWriting_Editing.pas"/>
         <DCCReference Include="Source\Common\AutoWriting_Learning.pas"/>
         <DCCReference Include="Source\Common\AutoWriting_Fonts.pas"/>
+        <DCCReference Include="Source\Common\AutoWriting_FontCatalog.pas"/>
         <DCCReference Include="Source\Common\AutoWriting_Renderer.pas"/>
         <DCCReference Include="Source\UI\AutoWriting_SettingsForm.pas"/>
         <DCCReference Include="Source\Plugin\Filter\AutoWriting_Parameters.pas"/>

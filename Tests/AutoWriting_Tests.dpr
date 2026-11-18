@@ -15,12 +15,19 @@ uses System.SysUtils, System.Classes, System.Math, System.Types, System.Hash,
   AutoWriting_Vertices in '..\Source\Common\AutoWriting_Vertices.pas',
   AutoWriting_Branches in '..\Source\Common\AutoWriting_Branches.pas',
   AutoWriting_Reveal in '..\Source\Common\AutoWriting_Reveal.pas',
+  AutoWriting_ReferenceData in '..\Source\Common\AutoWriting_ReferenceData.pas',
+  AutoWriting_ReferenceOrder in '..\Source\Common\AutoWriting_ReferenceOrder.pas',
+  AutoWriting_Preview in '..\Source\Common\AutoWriting_Preview.pas',
+  AutoWriting_ReferenceFit in '..\Source\Common\AutoWriting_ReferenceFit.pas',
   AutoWriting_Inference in '..\Source\Common\AutoWriting_Inference.pas',
   AutoWriting_Editing in '..\Source\Common\AutoWriting_Editing.pas',
   AutoWriting_Learning in '..\Source\Common\AutoWriting_Learning.pas',
   AutoWriting_Fonts in '..\Source\Common\AutoWriting_Fonts.pas',
+  AutoWriting_FontCatalog in '..\Source\Common\AutoWriting_FontCatalog.pas',
   AutoWriting_Renderer in '..\Source\Common\AutoWriting_Renderer.pas',
   AutoWriting_PenTests in 'AutoWriting_PenTests.pas',
+  AutoWriting_ReferenceTests in 'AutoWriting_ReferenceTests.pas',
+  AutoWriting_LayoutTests in 'AutoWriting_LayoutTests.pas',
   AutoWriting_EditRegressionTests in 'AutoWriting_EditRegressionTests.pas';
 
 type
@@ -49,10 +56,10 @@ var
   DialogHandle,MemoHandle,PageHandle,PenHandle,AngleHandle,ApplyHandle: HWND;
   LightXHandle,LightYHandle: HWND;
   PenSizeHandle: HWND;
-  ChangeAngleInDialog: Boolean;
+  ChangeAngleInDialog,UILayoutOnly: Boolean;
   PreviewSurface,EditorSurface: HWND;
   UITimer: UINT_PTR;
-  UIStage,UICount,UIEdits,DialogPenChoice: Integer;
+  UIStage,UICount,UIEdits,DialogPenChoice,DialogInitialPenChoice: Integer;
   UIError: string;
   UIValues: array[0..8] of UTF8String;
   EditingTimer: UINT_PTR;
@@ -633,18 +640,20 @@ end;
 procedure TestFinalFont;
 var S: TWritingSettings; DC: HDC; Font: HFONT; Old: HGDIOBJ;
   GM: TGlyphMetrics; Matrix: TMat2; Bytes: TBytes; Size: Cardinal; W,H,X,Y,I,Stride,Expected: Integer;
-  Pixels: TWritingPixels;
+  Pixels: TWritingPixels; Sample: string;
 begin
-  S:=DefaultWritingSettings; S.Text:='永'; S.FontName:='ＭＳ ゴシック'; S.FontSize:=128;
-  S.ShowPen:=False; S.Ratios[ckKanji]:=1; Configure(S);
+  for Sample in TArray<string>.Create('永','あ','お','ぬ','A','i','シ') do
+  begin
+  S:=DefaultWritingSettings; S.Text:=Sample; S.FontName:='ＭＳ ゴシック'; S.FontSize:=128;
+  S.ShowPen:=False; S.Ratios[CharacterKind(Sample)]:=1; Configure(S);
   DC:=CreateCompatibleDC(0); Font:=CreateFont(-128,0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,
     OUT_TT_ONLY_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,PChar(S.FontName));
   Old:=SelectObject(DC,Font);
   try
     FillChar(Matrix,SizeOf(Matrix),0); Matrix.eM11.Value:=1; Matrix.eM22.Value:=1;
-    Size:=GetGlyphOutlineW(DC,Ord('永'),GGO_GRAY8_BITMAP,GM,0,nil,Matrix);
+    Size:=GetGlyphOutlineW(DC,Ord(Sample[1]),GGO_GRAY8_BITMAP,GM,0,nil,Matrix);
     Check(Size<>GDI_ERROR,'Independent glyph extraction'); SetLength(Bytes,Size);
-    GetGlyphOutlineW(DC,Ord('永'),GGO_GRAY8_BITMAP,GM,Size,@Bytes[0],Matrix);
+    GetGlyphOutlineW(DC,Ord(Sample[1]),GGO_GRAY8_BITMAP,GM,Size,@Bytes[0],Matrix);
     W:=GM.gmBlackBoxX; H:=GM.gmBlackBoxY; Stride:=(W+3) and not 3;
     SizeFrame(W+100,H+100); Pixels:=Render(10000);
     for Y:=0 to H-1 do for X:=0 to W-1 do
@@ -653,8 +662,10 @@ begin
       I:=(Y+50)*Scene.Width+X+50;
       Check(Pixels[I].A=Expected,'Final glyph differs from Windows font mask');
     end;
-    SavePNG(Pixels,Scene.Width,Scene.Height,'font_original.png');
+    if Sample='永' then SavePNG(Pixels,Scene.Width,Scene.Height,'font_original.png')
+    else SavePNG(Pixels,Scene.Width,Scene.Height,'font_reference_'+IntToHex(Ord(Sample[1]),4)+'.png');
   finally SelectObject(DC,Old); DeleteObject(Font); DeleteDC(DC) end;
+  end;
   Writeln('PASS final glyph equals original font mask, pixel for pixel');
 end;
 
@@ -887,7 +898,7 @@ begin
   DC:=GetDC(Surface);
   try
     Before:=GetPixel(DC,8,8);
-    Check(Before=RGB(32,32,32),Description+': dark animation checkerboard is missing');
+    Check(Before=RGB(0,0,0),Description+': contrasting animation background is missing');
     // 背景消去と次のWM_PAINTの間にも、表示済みフレームが消えないことを検査する。
     for I:=1 to 20 do
     begin
@@ -911,9 +922,10 @@ begin
         if (MemoHandle=0) or (PageHandle=0) or (PenHandle=0) then raise Exception.Create('Settings UI control missing');
         Check(ApplyHandle=0,'Apply/cancel buttons must be removed');
         CheckRetainedFrame(PreviewSurface,'Text preview');
+        if UILayoutOnly then CheckWritingSettingsLayout(DialogHandle,Check);
         CaptureDialog('ui_preview.png');
         SendMessage(MemoHandle,WM_SETTEXT,0,LPARAM(PChar('自'+sLineBreak+'本文\nの更新')));
-        Check(SendMessage(PenHandle,CB_GETCURSEL,0,0)=2,'Opening settings changed the saved fountain pen');
+        Check(SendMessage(PenHandle,CB_GETCURSEL,0,0)=DialogInitialPenChoice,'Initial pen choice must reflect the saved visibility');
         SendMessage(PenHandle,CB_SETCURSEL,DialogPenChoice,0);
         SendMessage(GetParent(PenHandle),WM_COMMAND,(GetDlgCtrlID(PenHandle) and $FFFF) or (CBN_SELCHANGE shl 16),LPARAM(PenHandle));
         Check(AngleHandle<>0,'Missing pen-angle control');
@@ -934,7 +946,17 @@ begin
         end;
         UIStage:=1;
       end;
-      1: begin UIStage:=2 end;
+      1: begin
+        if UILayoutOnly then
+        begin
+          if UICount<4 then Exit;
+          if DialogInitialPenChoice=2 then CaptureDialog('ui_compact_settings.png')
+          else if DialogPenChoice=5 then CaptureDialog('ui_pen_none.png')
+          else CaptureDialog('ui_legacy_pen_restored.png');
+          KillTimer(0,UITimer); UITimer:=0;
+          UIStage:=5; PostMessage(DialogHandle,WM_CLOSE,0,0);
+        end else UIStage:=2;
+      end;
       2: begin
         SendMessage(PageHandle,TCM_SETCURSEL,1,0);
         FillChar(Header,SizeOf(Header),0); Header.hwndFrom:=PageHandle; Header.idFrom:=0;
@@ -978,12 +1000,16 @@ var S,R: TWritingSettings; Edit: TEDIT_SECTION; Mode: Integer;
 begin
   for Mode:=0 to 3 do
   begin
+  if UILayoutOnly and (Mode>2) then Break;
   DialogHandle:=0; MemoHandle:=0; PageHandle:=0; PenHandle:=0; AngleHandle:=0;
   LightXHandle:=0; LightYHandle:=0; PenSizeHandle:=0;
   ApplyHandle:=0; PreviewSurface:=0; EditorSurface:=0; UIStage:=0; UICount:=0; UIEdits:=0; UIError:='';
-  ChangeAngleInDialog:=Mode=1;
+  ChangeAngleInDialog:=(Mode=1) and not UILayoutOnly;
   DialogPenChoice:=1; if Mode=2 then DialogPenChoice:=5 else if Mode=3 then DialogPenChoice:=4;
-  S:=DefaultWritingSettings; S.Speed:=240.25; S.PenAngle:=35.25; Configure(S);
+  S:=DefaultWritingSettings; S.Speed:=240.25; S.PenAngle:=35.25;
+  DialogInitialPenChoice:=2;
+  if UILayoutOnly and (Mode>0) then begin S.ShowPen:=False; DialogInitialPenChoice:=5 end;
+  Configure(S);
   S.LightX:=-100.25; S.LightY:=-140.25; S.PenSize:=1.00005; Configure(S);
   UIValues[0]:=UTF8String(DetailBacking); UIValues[1]:=UTF8String(EncodeHostText(TextBacking));
   UIValues[2]:='万年筆'; UIValues[3]:='240.25,480,1'; UIValues[4]:='35.25,70,1'; FillChar(Edit,SizeOf(Edit),0);
@@ -995,12 +1021,18 @@ begin
   try Button^.Callback2(@Edit,Pointer(1234),'自動筆記:2','設定')
   finally if UITimer<>0 then KillTimer(0,UITimer) end;
   Check(UIError='','Settings UI failure: '+UIError); Check(UIStage=5,'Settings UI did not finish');
-  Check(UIEdits=2+Ord(Mode=1)*5,Format('Only changed host items should be saved (mode %d, writes %d)',[Mode,UIEdits]));
+  Check(UIEdits=2+Ord(ChangeAngleInDialog)*5+Ord(UILayoutOnly),Format('Only changed host items should be saved (mode %d, writes %d)',[Mode,UIEdits]));
+  if UILayoutOnly then
+  begin
+    R:=DefaultWritingSettings; ReadSettingsJSON(string(UIValues[0]),R);
+    Check((R.FontName='ＭＳ ゴシック') and R.Bold and R.Italic,'Combo and font styles were applied to production settings');
+    Check(R.ShowPen,'Hidden legacy visibility flag must not override the selected pen');
+  end;
   Check(DecodeHostText(string(UIValues[1]))='自'+sLineBreak+'本文\nの更新','UI text not sent to host');
   Check(TextBacking='自'+sLineBreak+'本文\nの更新','Host memo did not decode the edited alias value');
   Check(string(UIValues[2])=string(AW_PEN_NAMES[AW_PEN_ORDER[DialogPenChoice]]),'UI pen not sent to host');
   Check(string(UIValues[3])='240.25,480,1','Unedited animated fractional speed was overwritten');
-  if Mode<>1 then begin
+  if not ChangeAngleInDialog then begin
     Check(string(UIValues[4])='35.25,70,1','Unedited animated fractional angle was overwritten');
     Check((string(UIValues[5])='-100.25,180,1') and (string(UIValues[6])='-140.25,160,1'),'Unedited light animation was overwritten');
     Check(string(UIValues[7])='100.005,200,1','Unedited fractional pen size animation was overwritten');
@@ -1015,7 +1047,8 @@ begin
   end;
   ChangeAngleInDialog:=False;
   Writeln('PASS close-to-apply settings, removed buttons, multiline text and pen synchronization');
-  Writeln('PASS text and single-character preview retain their frame during background erase');
+  if UILayoutOnly then Writeln('PASS font combo, styles, paired controls, wheel scroll and unchanged numeric values')
+  else Writeln('PASS text and single-character preview retain their frame during background erase');
 end;
 
 procedure EditingClick(const Point: TPoint);
@@ -1468,7 +1501,8 @@ begin
   try
     if ParamCount<2 then raise Exception.Create('Usage: AutoWriting_Tests.exe plugin.auf2 output-directory');
     OutputDirectory:=ExpandFileName(ParamStr(2)); ForceDirectories(OutputDirectory);
-    if not ((ParamCount>=3) and ((ParamStr(3)='--glyph-samples') or (ParamStr(3)='--demo-only'))) then
+    UILayoutOnly:=(ParamCount>=3) and (ParamStr(3)='--layout-only');
+    if not UILayoutOnly and not ((ParamCount>=3) and ((ParamStr(3)='--glyph-samples') or (ParamStr(3)='--demo-only'))) then
     begin TestSettingsAndLearning; TestStrokeEditing; TestEditingVertices; TestEditRegressions(Check); TestOverlappingReveal; TestSelectedStrokeOperations; TestBranchAbsorption; TestFontCacheAndLayout end;
     Module:=LoadLibrary(PChar(ExpandFileName(ParamStr(1))));
     Check(Module<>0,'Cannot load production AUF2: '+SysErrorMessage(GetLastError));
@@ -1490,8 +1524,10 @@ begin
     PenTests.PenItem:=PenItem;
     if (ParamCount>=3) and (ParamStr(3)='--glyph-samples') then RenderGlyphSamples
     else if (ParamCount>=3) and (ParamStr(3)='--demo-only') then RenderDemo
+    else if UILayoutOnly then TestSettingsDialog
     else begin
       TestFinalFont; TestPenRendering(PenTests); TestHostMemoText; TestHostInkColor; TestProduction;
+      Video.UserData:=Session; TestStrokeReferences(PenTests,OutputDirectory);
       if not ((ParamCount>=3) and (ParamStr(3)='--no-ui')) then
       begin TestSettingsDialog; TestNativeStrokeEditing; TestNativeBranchJoin end;
     end;

@@ -1,0 +1,39 @@
+NOTICE — Attribution and statement of changes
+=============================================
+
+Original work
+-------------
+Title:      KanjiVG
+Author:     Ulrich Apel
+Source:     https://kanjivg.tagaini.net/
+Licence:    Creative Commons Attribution-ShareAlike 3.0 Unported (CC BY-SA 3.0)
+            https://creativecommons.org/licenses/by-sa/3.0/
+
+Derivative work
+---------------
+Title:      fude-kana-data
+Licence:    Creative Commons Attribution-ShareAlike 3.0 Unported (CC BY-SA 3.0)
+
+This work is a modified version of KanjiVG. It is NOT endorsed by Ulrich Apel.
+
+Statement of changes
+--------------------
+1. Restricted the dataset to Japanese kana; all kanji were removed.
+2. Converted stroke geometry from SVG path descriptions to JSON.
+3. Resampled each stroke into an ordered sequence of points.
+4. Computed, per stroke, a dominant direction vector and a closed-loop flag.
+5. Normalised all coordinates into a unit-square reference frame.
+
+Stroke count and stroke order are unchanged from the original data.
+No stroke was added, removed, or reordered.
+
+Distribution
+------------
+This data is published here in unencumbered form, without any technological
+protection measure, so that any recipient may exercise the rights granted by
+CC BY-SA 3.0.
+
+A copy of this data is also embedded in the Fude iOS application
+(https://fudejapanese.com). The application binary is distributed through the
+Apple App Store; that distribution does not restrict the rights granted over
+this data, which remains available here under CC BY-SA 3.0.

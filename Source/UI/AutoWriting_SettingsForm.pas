@@ -19,7 +19,8 @@ uses Winapi.Windows, Winapi.Messages, System.SysUtils, System.Classes, System.Ty
   Vcl.Forms, Vcl.Controls, Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.ComCtrls,
   Vcl.Graphics, Vcl.Dialogs, Vcl.Samples.Spin, Vcl.Menus, Vcl.ImgList, Vcl.NumberBox,
   Vcl.Themes, Vcl.Styles, AutoWriting_Fonts,
-  AutoWriting_Renderer, AutoWriting_Inference, AutoWriting_Learning, AutoWriting_Editing, AutoWriting_Vertices;
+  AutoWriting_Renderer, AutoWriting_Inference, AutoWriting_Learning, AutoWriting_Editing, AutoWriting_Vertices,
+  AutoWriting_Preview, AutoWriting_FontCatalog;
 
 type
   TDarkControlAccess = class(TControl);
@@ -63,9 +64,12 @@ type
     FPreviewPage,FEditPage: TTabSheet;
     FPreviewPaint,FEditPaint: TWritingPaintBox;
     FMemo: TMemo;
-    FFontButton,FColorButton: TButton;
+    FColorButton: TButton;
+    FFontChoice: TComboBox;
+    FSettingsScroll: TScrollBox;
+    FWheelRemainder: Integer;
     FPen,FDirection: TComboBox;
-    FShowPen: TCheckBox;
+    FBold,FItalic: TCheckBox;
     FSize,FSpeed,FLetter,FLine,FAngle,FLift,FLightX,FLightY: TSpinEdit;
     FPenSize: TNumberBox;
     FRatios: array[TCharacterKind] of TSpinEdit;
@@ -96,7 +100,7 @@ type
     procedure PaintEditor(Sender: TObject);
     procedure SelectCharacter(Sender: TObject);
     procedure SelectStroke(Sender: TObject);
-    procedure PickFont(Sender: TObject);
+    procedure FontChanged(Sender: TObject);
     procedure PickColor(Sender: TObject);
     procedure FormKey(Sender: TObject; var Key: Word; Shift: TShiftState);
     procedure MenuAction(Sender: TObject);
@@ -139,6 +143,8 @@ type
     procedure DrawPixels(Canvas: TCanvas; const Rect: TRect; const Pixels: TWritingPixels; W,H: Integer);
     function AddSpin(Parent: TWinControl; const Caption: string; Y,Value,Min,Max: Integer): TSpinEdit;
     function AddButton(Parent: TWinControl; const Caption: string; X,Y,W: Integer; Event: TNotifyEvent): TButton;
+  protected
+    procedure MouseWheelHandler(var Message: TMessage); override;
   public
     constructor CreateForSettings(const S: TWritingSettings);
     destructor Destroy; override;
@@ -474,8 +480,20 @@ var Bottom,LeftPanel,RightPanel,HelpPanel: TPanel; Scroll: TScrollBox;
     if Control is TWinControl then
       for I:=0 to TWinControl(Control).ControlCount-1 do ApplyPalette(TWinControl(Control).Controls[I]);
   end;
+  function PairSpin(const Caption: string; X,Top,Value,MinValue,MaxValue: Integer): TSpinEdit;
+  var LabelControl: TLabel;
+  begin
+    LabelControl:=TLabel.Create(Self); LabelControl.Parent:=Scroll;
+    LabelControl.SetBounds(X,Top+5,66,20); LabelControl.Caption:=Caption;
+    LabelControl.ShowHint:=True; LabelControl.Hint:=Caption;
+    Result:=TSpinEdit.Create(Self); Result.Parent:=Scroll; Result.SetBounds(X+70,Top,72,27);
+    Result.MinValue:=MinValue; Result.MaxValue:=MaxValue; Result.Value:=Value; Result.OnChange:=Changed;
+  end;
 begin
   inherited CreateNew(nil); FSettings:=S; FUpdating:=True;
+  // 旧設定の表示OFFを「無し」へ移し、編集画面の可視性の指定を種類へ統一する。
+  if not FSettings.ShowPen then FSettings.Pen:=pkNone;
+  FSettings.ShowPen:=True;
   // 座標を96 DPIで構築してから全体を一度だけ拡大する。CreateNewにはDFMの自動拡大がない。
   Scaled:=False; AutoScroll:=False; Font.PixelsPerInch:=96;
   StyleName:='Windows Modern Dark'; Color:=UI_BACKGROUND; Font.Color:=UI_TEXT;
@@ -497,42 +515,54 @@ begin
   FPreviewPage:=TTabSheet.Create(Self); FPreviewPage.PageControl:=FPages; FPreviewPage.Caption:='プレビュー';
   FEditPage:=TTabSheet.Create(Self); FEditPage.PageControl:=FPages; FEditPage.Caption:='書き順編集';
   Scroll:=TScrollBox.Create(Self); Scroll.Parent:=FPreviewPage; Scroll.Align:=alLeft; Scroll.Width:=340;
+  FSettingsScroll:=Scroll; Scroll.Name:='WritingSettingsScroll';
   Scroll.HorzScrollBar.Visible:=False; Scroll.BorderStyle:=bsNone;
   L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,10,300,23); L.Caption:='表示文字列（改行できます）';
   FMemo:=TMemo.Create(Self); FMemo.Parent:=Scroll; FMemo.SetBounds(12,36,304,116);
   FMemo.ScrollBars:=ssVertical; FMemo.MaxLength:=AW_MAX_TEXT; FMemo.Text:=S.Text; FMemo.OnChange:=Changed;
-  FFontButton:=AddButton(Scroll,S.FontName,12,162,304,PickFont);
-  FSize:=AddSpin(Scroll,'基準文字サイズ',202,Round(S.FontSize),12,256);
-  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,241,204,22); L.Caption:='ペンサイズ（%）';
-  FPenSize:=TNumberBox.Create(Self); FPenSize.Parent:=Scroll; FPenSize.SetBounds(216,236,100,27);
+  FFontChoice:=TComboBox.Create(Self); FFontChoice.Parent:=Scroll;
+  FFontChoice.Name:='WritingFontChoice'; FFontChoice.SetBounds(12,162,194,27);
+  FFontChoice.Style:=csDropDownList; FFontChoice.DropDownCount:=18;
+  ListWritingFonts(FFontChoice.Items);
+  if FFontChoice.Items.IndexOf(S.FontName)<0 then FFontChoice.Items.Add(S.FontName);
+  FFontChoice.ItemIndex:=FFontChoice.Items.IndexOf(S.FontName); FFontChoice.OnChange:=FontChanged;
+  FFontChoice.ShowHint:=True; FFontChoice.Hint:='フォントを選択します。インストール済みのアウトライン書体です。';
+  FBold:=TCheckBox.Create(Self); FBold.Parent:=Scroll; FBold.SetBounds(212,162,50,27);
+  FBold.Caption:='太字'; FBold.Checked:=S.Bold; FBold.OnClick:=FontChanged;
+  FItalic:=TCheckBox.Create(Self); FItalic.Parent:=Scroll; FItalic.SetBounds(268,162,50,27);
+  FItalic.Caption:='斜体'; FItalic.Checked:=S.Italic; FItalic.OnClick:=FontChanged;
+  FSize:=PairSpin('基準サイズ',12,202,Round(S.FontSize),12,256);
+  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(174,207,66,22); L.Caption:='ペン（%）';
+  FPenSize:=TNumberBox.Create(Self); FPenSize.Parent:=Scroll; FPenSize.SetBounds(244,202,72,27);
   FPenSize.Mode:=nbmFloat; FPenSize.Decimal:=2; FPenSize.MinValue:=30; FPenSize.MaxValue:=300;
   FPenSize.SmallStep:=0.01; FPenSize.LargeStep:=1; FPenSize.Value:=S.PenSize*100; FPenSize.OnChangeValue:=Changed;
   FPenSize.ShowHint:=True; FPenSize.Hint:='100で標準、0.01刻み。AviUtl2側の「ペンサイズ」と共通です。';
-  FSpeed:=AddSpin(Scroll,'ペン速度（px / 秒）',270,Round(S.Speed),1,10000);
-  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,309,150,22); L.Caption:='筆記具';
-  FPen:=TComboBox.Create(Self); FPen.Parent:=Scroll; FPen.SetBounds(142,306,174,27); FPen.Style:=csDropDownList; FPen.Sorted:=False;
+  FSpeed:=AddSpin(Scroll,'ペン速度（px / 秒）',236,Round(S.Speed),1,10000);
+  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,275,150,22); L.Caption:='筆記具';
+  FPen:=TComboBox.Create(Self); FPen.Parent:=Scroll; FPen.SetBounds(142,272,174,27); FPen.Style:=csDropDownList; FPen.Sorted:=False;
   for P in AW_PEN_ORDER do FPen.Items.Add(string(AW_PEN_NAMES[P]));
-  FPen.ItemIndex:=PenChoiceIndex(S.Pen); FPen.OnChange:=Changed;
-  FShowPen:=TCheckBox.Create(Self); FShowPen.Parent:=Scroll; FShowPen.SetBounds(12,341,300,25);
-  FShowPen.Caption:='ペン・筆を表示'; FShowPen.Checked:=S.ShowPen; FShowPen.OnClick:=Changed;
-  FColorButton:=AddButton(Scroll,'文字色を選択',12,373,304,PickColor);
-  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,417,130,22); L.Caption:='文字の向き';
-  FDirection:=TComboBox.Create(Self); FDirection.Parent:=Scroll; FDirection.SetBounds(142,412,174,27);
+  FPen.ItemIndex:=PenChoiceIndex(FSettings.Pen); FPen.OnChange:=Changed;
+  FColorButton:=AddButton(Scroll,'文字色を選択',12,305,304,PickColor);
+  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,349,130,22); L.Caption:='文字の向き';
+  FDirection:=TComboBox.Create(Self); FDirection.Parent:=Scroll; FDirection.SetBounds(142,344,174,27);
   FDirection.Style:=csDropDownList; FDirection.Items.AddStrings(['横書き','縦書き']); FDirection.ItemIndex:=Ord(S.Vertical); FDirection.OnChange:=Changed;
-  FLetter:=AddSpin(Scroll,'字間（基準サイズの %）',451,Round(S.LetterGap*100),-50,300);
-  FLine:=AddSpin(Scroll,'行の追加間隔（%）',485,Round(S.LineGap*100),0,400);
-  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,526,300,22); L.Caption:='文字種別のサイズ比率';
-  Y:=556;
+  FLetter:=PairSpin('字間（%）',12,383,Round(S.LetterGap*100),-50,300);
+  FLine:=PairSpin('行間（%）',174,383,Round(S.LineGap*100),0,400);
+  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,425,300,22); L.Caption:='文字種別のサイズ比率';
+  Y:=455;
   for K:=Low(K) to High(K) do
-  begin FRatios[K]:=AddSpin(Scroll,KIND_NAMES[K]+'（%）',Y,Round(S.Ratios[K]*100),30,200); Inc(Y,34) end;
-  FAngle:=AddSpin(Scroll,'ペン角度（0°＝上）',Y+12,Round(S.PenAngle),-180,180);
+  begin
+    FRatios[K]:=PairSpin(KIND_NAMES[K]+'%',12+(Ord(K) mod 2)*162,Y+(Ord(K) div 2)*34,Round(S.Ratios[K]*100),30,200);
+  end;
+  Inc(Y,114);
+  FAngle:=PairSpin('角度（°）',12,Y,Round(S.PenAngle),-180,180);
   FAngle.ShowHint:=True; FAngle.Hint:='正の値で右、負の値で左へ傾きます。AviUtl2側の「ペン角度」と共通です。';
-  FLift:=AddSpin(Scroll,'ペンを上げる高さ',Y+46,Round(S.LiftHeight),0,80);
-  FLightX:=AddSpin(Scroll,'光源X（左− / 右＋）',Y+80,Round(S.LightX),-400,400);
-  FLightY:=AddSpin(Scroll,'光源Y（上− / 下＋）',Y+114,Round(S.LightY),-400,400);
+  FLift:=PairSpin('持上げ高さ',174,Y,Round(S.LiftHeight),0,80);
+  FLightX:=PairSpin('光源X',12,Y+34,Round(S.LightX),-400,400);
+  FLightY:=PairSpin('光源Y',174,Y+34,Round(S.LightY),-400,400);
   FLightX.ShowHint:=True; FLightX.Hint:='ペン先を基準にした光源方向。左から照らすと影が右へ伸びます。AviUtl2側と共通です。';
   FLightY.ShowHint:=True; FLightY.Hint:='ペン先を基準にした光源方向。上から照らすと影が下へ伸びます。AviUtl2側と共通です。';
-  L:=TLabel.Create(Self); L.Parent:=Scroll; L.AutoSize:=False; L.SetBounds(12,Y+152,304,80); L.WordWrap:=True;
+  L:=TLabel.Create(Self); L.Parent:=Scroll; L.AutoSize:=False; L.SetBounds(12,Y+72,304,52); L.WordWrap:=True;
   L.Caption:='インストール済みのフォントを使用します。文字形状は保持し、書き順だけを推定・学習します。筆圧や高度な縦組みは今後調整します。';
   HelpPanel:=TPanel.Create(Self); HelpPanel.Parent:=FPreviewPage; HelpPanel.Align:=alBottom; HelpPanel.Height:=50; HelpPanel.BevelOuter:=bvNone;
   FTimeLabel:=TLabel.Create(Self); FTimeLabel.Parent:=HelpPanel; FTimeLabel.AutoSize:=False;
@@ -584,6 +614,30 @@ end;
 procedure TWritingSettingsForm.FormShown(Sender: TObject);
 begin FitToWorkArea end;
 
+procedure TWritingSettingsForm.MouseWheelHandler(var Message: TMessage);
+var P: TPoint; Lines: UINT; Step,Delta: Integer;
+begin
+  if (Message.Result=0) and (FPages.ActivePage=FPreviewPage) and
+    (FSettingsScroll.VertScrollBar.Range>FSettingsScroll.ClientHeight) and
+    not FFontChoice.DroppedDown and not FPen.DroppedDown and not FDirection.DroppedDown and
+    ((LoWord(Message.WParam) and MK_CONTROL)=0) then
+  begin
+    P:=Point(SmallInt(LoWord(Message.LParam)),SmallInt(HiWord(Message.LParam)));
+    if PtInRect(FPreviewPage.ClientRect,FPreviewPage.ScreenToClient(P)) and
+      not PtInRect(FMemo.ClientRect,FMemo.ScreenToClient(P)) then
+    begin
+      Delta:=SmallInt(HiWord(Message.WParam)); Lines:=3;
+      SystemParametersInfo(SPI_GETWHEELSCROLLLINES,0,@Lines,0);
+      if Lines=WHEEL_PAGESCROLL then Step:=FSettingsScroll.ClientHeight*9 div 10
+      else Step:=UiPx(16)*Integer(Min(Lines,20));
+      FSettingsScroll.VertScrollBar.Position:=SettingsWheelPosition(FSettingsScroll.VertScrollBar.Position,
+        FSettingsScroll.VertScrollBar.Range,FSettingsScroll.ClientHeight,Delta,Step,FWheelRemainder);
+      Message.Result:=1; Exit;
+    end;
+  end;
+  inherited MouseWheelHandler(Message);
+end;
+
 procedure TWritingSettingsForm.MonitorDpiChanged(Sender: TObject; OldDPI,NewDPI: Integer);
 begin FitToWorkArea end;
 
@@ -599,7 +653,7 @@ begin
   FSettings.Text:=Copy(FMemo.Text,1,AW_MAX_TEXT); FSettings.FontSize:=FSize.Value;
   if FSpeedChanged then FSettings.Speed:=FSpeed.Value;
   FSettings.Pen:=AW_PEN_ORDER[EnsureRange(FPen.ItemIndex,Low(AW_PEN_ORDER),High(AW_PEN_ORDER))];
-  FSettings.Vertical:=FDirection.ItemIndex=1; FSettings.ShowPen:=FShowPen.Checked;
+  FSettings.Vertical:=FDirection.ItemIndex=1; FSettings.ShowPen:=True;
   FSettings.LetterGap:=FLetter.Value/100; FSettings.LineGap:=FLine.Value/100;
   for K:=Low(K) to High(K) do FSettings.Ratios[K]:=FRatios[K].Value/100;
   if FPenSizeChanged then FSettings.PenSize:=FPenSize.ValueFloat/100;
@@ -656,21 +710,14 @@ end;
 
 procedure TWritingSettingsForm.DrawPixels(Canvas: TCanvas; const Rect: TRect;
   const Pixels: TWritingPixels; W,H: Integer);
-var X,Y,I,A,BG: Integer; Row: PByte;
+var Y: Integer; BG: Byte;
 begin
     // 同じ寸法のDIBとRGBA配列は再利用し、毎フレームのGDI資源確保を避ける。
     if (FDisplayBitmap.Width<>W) or (FDisplayBitmap.Height<>H) then FDisplayBitmap.SetSize(W,H);
-    GdiFlush;
+    GdiFlush; BG:=PreviewBackground(FSettings.InkColor);
     for Y:=0 to H-1 do
     begin
-      Row:=FDisplayBitmap.ScanLine[Y];
-      for X:=0 to W-1 do
-      begin
-        I:=Y*W+X; A:=Pixels[I].A; BG:=40; if ((X div 20+Y div 20) mod 2)=0 then BG:=32;
-        Row[X*4]:=(Pixels[I].B*A+BG*(255-A)+127) div 255;
-        Row[X*4+1]:=(Pixels[I].G*A+BG*(255-A)+127) div 255;
-        Row[X*4+2]:=(Pixels[I].R*A+BG*(255-A)+127) div 255; Row[X*4+3]:=255;
-      end;
+      CompositePreviewRow(Pixels,Y*W,W,BG,FDisplayBitmap.ScanLine[Y]);
     end;
     if (Rect.Width=W) and (Rect.Height=H) then
       BitBlt(Canvas.Handle,Rect.Left,Rect.Top,W,H,FDisplayBitmap.Canvas.Handle,0,0,SRCCOPY)
@@ -693,20 +740,25 @@ begin
   except on E: Exception do begin FPreviewPaint.Canvas.TextOut(20,20,E.Message); FStatus.Caption:=E.Message end end;
 end;
 
-procedure TWritingSettingsForm.PickFont(Sender: TObject);
-var D: TFontDialog;
+procedure TWritingSettingsForm.FontChanged(Sender: TObject);
+var Candidate: TWritingSettings; Engine: TWritingFontEngine;
 begin
-  D:=TFontDialog.Create(Self);
+  if FUpdating or (FFontChoice.ItemIndex<0) then Exit;
+  Candidate:=FSettings; Candidate.FontName:=FFontChoice.Items[FFontChoice.ItemIndex];
+  Candidate.Bold:=FBold.Checked; Candidate.Italic:=FItalic.Checked;
+  Engine:=TWritingFontEngine.Create;
   try
-    D.Options:=[fdTrueTypeOnly,fdForceFontExist]; D.Font.Name:=FSettings.FontName; D.Font.Size:=20;
-    D.Font.Style:=[]; if FSettings.Bold then D.Font.Style:=D.Font.Style+[fsBold];
-    if FSettings.Italic then D.Font.Style:=D.Font.Style+[fsItalic];
-    if D.Execute then
-    begin
-      FSettings.FontName:=D.Font.Name; FSettings.Bold:=fsBold in D.Font.Style; FSettings.Italic:=fsItalic in D.Font.Style;
-      FFontButton.Caption:=D.Font.Name; Changed(nil);
+    try
+      Engine.Configure(Candidate); FSettings:=Candidate; Changed(nil);
+    except on E: Exception do
+      begin
+        FUpdating:=True;
+        try FFontChoice.ItemIndex:=FFontChoice.Items.IndexOf(FSettings.FontName); FBold.Checked:=FSettings.Bold; FItalic.Checked:=FSettings.Italic
+        finally FUpdating:=False end;
+        FStatus.Caption:=E.Message;
+      end;
     end;
-  finally D.Free end;
+  finally Engine.Free end;
 end;
 
 procedure TWritingSettingsForm.PickColor(Sender: TObject);
@@ -803,7 +855,10 @@ begin
   if FEditorMenu<>nil then MenuPopup(FEditorMenu);
   if FStrokeMenu<>nil then MenuPopup(FStrokeMenu);
   if FCurrent=nil then begin FEditorStatus.Caption:='文字を選択してください。'; Exit end;
-  State:='自動推定'; if FCurrent.Learned then State:='学習済み';
+  State:='自動推定';
+  if FCurrent.ReferenceUsed then
+    if FCurrent.ReferenceOrderOnly then State:='書き順参照（順序・方向）' else State:='書き順参照';
+  if FCurrent.Learned then State:='学習済み';
   Text:=FCurrent.Character+' — '+State+' / '+IntToStr(Length(FCurrent.Strokes))+' 画。';
   if FSelectedHit.Stroke>=0 then Text:=Text+Format(' 選択位置: %d画目。右クリック→頂点作成／分割。',[FSelectedHit.Stroke+1])
   else Text:=Text+' 線を右クリック→頂点作成／分割。重なりは色付き候補から選択。';
@@ -1113,6 +1168,7 @@ begin
   G:=FEditEngine.Glyph(FChars.Items[Index]);
   if G.Missing then C.TextOut(Rect.Left+UiPx(61),Rect.Top+UiPx(17),'未収録')
   else if G.Learned then C.TextOut(Rect.Left+UiPx(61),Rect.Top+UiPx(17),'学習済')
+  else if G.ReferenceUsed then C.TextOut(Rect.Left+UiPx(61),Rect.Top+UiPx(17),'参照')
   else C.TextOut(Rect.Left+UiPx(61),Rect.Top+UiPx(17),'推定');
 end;
 

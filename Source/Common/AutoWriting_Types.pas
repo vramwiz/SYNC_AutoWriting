@@ -47,7 +47,7 @@ type
     Reveal: TArray<Single>;
     Strokes: TArray<TStroke>;
     TotalDistance: Double;
-    Learned, Missing: Boolean;
+    Learned, Missing, ReferenceUsed, ReferenceOrderOnly: Boolean;
   end;
   TWritingPixels = TArray<TPIXEL_RGBA>;
 
