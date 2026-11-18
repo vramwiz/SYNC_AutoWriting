@@ -4,6 +4,8 @@ AviUtl2用のDelphiプラグインです。入力した文章を、ペンが文�
 
 ![本番AUF2による筆記サンプル](Sample/auto_writing.gif)
 
+説明書用サンプルは白背景・黒文字です。本体の初期文字色は白です。
+
 [設定プレビュー](Sample/settings_preview.png) / [書き順編集](Sample/stroke_editor.png) / [時間別の描画](Sample/timeline.png) / [転写方式の比較](Sample/transfer_comparison.png)
 
 ## 使い方

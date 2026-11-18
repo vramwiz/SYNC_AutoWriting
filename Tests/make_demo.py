@@ -2,7 +2,7 @@
 
 from pathlib import Path
 import argparse
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 
 def main():
@@ -21,7 +21,24 @@ def main():
         sample = frames[round(index * (len(frames) - 1) / 15)].resize((400, 225))
         palette_source.paste(sample, ((index % 4) * 400, (index // 4) * 225))
     palette = palette_source.quantize(colors=128)
-    indexed = [frame.quantize(palette=palette, dither=Image.Dither.NONE) for frame in frames]
+    # 減色時に白背景が薄い灰色へ寄らないよう、白と黒のパレット色を固定する。
+    colors = palette.getpalette()
+    endpoints = {}
+    for target in (255, 0):
+        index = min(range(128), key=lambda i: sum((colors[i * 3 + c] - target) ** 2 for c in range(3)))
+        colors[index * 3:index * 3 + 3] = [target] * 3
+        endpoints[target] = index
+    palette.putpalette(colors)
+    indexed = []
+    for frame in frames:
+        item = frame.quantize(palette=palette, dither=Image.Dither.NONE)
+        red, green, blue = frame.split()
+        # パレット参照の近似探索でも純白・純黒が別の近似色へ割り当たらないようにする。
+        white = ImageChops.darker(ImageChops.darker(red, green), blue).point([0] * 255 + [255])
+        black = ImageChops.lighter(ImageChops.lighter(red, green), blue).point([255] + [0] * 255)
+        item.paste(endpoints[255], mask=white)
+        item.paste(endpoints[0], mask=black)
+        indexed.append(item)
     indexed[0].save(
         args.output / "auto_writing.gif", save_all=True, append_images=indexed[1:],
         duration=50, loop=0, disposal=2, optimize=True,

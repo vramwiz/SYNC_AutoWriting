@@ -7,7 +7,16 @@
 - Delphi名 `SYNC_AutoWriting`、日本語名「自動筆記」、グループ「SYNC」。本番は1つのAUF2。
 - 仕様は `docs/SPECIFICATION.md`。現在の実装範囲と制限は `docs/IMPLEMENTATION.md`。ユーザー向け操作は `README.md`。
 - ユーザー指示によりsetupは参照元の5ファイル（ZIPを含む）をそのままコピーする。WeatherFXの名前・ハッシュ・公開履歴を含むが、今は書き換えたり実行したりしない。
-- 現在は開発版v0.1.5。正式初版はv1.0.0からとし、コピー元の公開履歴を引き継がない。
+- 現在のv0.1.5は内部の開発・検証番号。正式な初回公開はv1.0.0とし、内部番号とコピー元の公開履歴を引き継がない。
+
+## 内部番号と公開バージョン（2026-11-18 ユーザー指定）
+
+- 開発中のv0.1.xは内部管理にとどめる。本ノート・検査記録の番号は公開履歴として扱わず、配布カタログJSONの`version`配列や公開タグへ追加しない。Win64 Release構成でのビルド・通常フォルダーへの配置も、正式公開を意味しない。
+- 初回公開時は **v1.0.0**。公開準備で本体の`AW_VERSION`を`1.0.0`へ設定し、表示名、公開用ドキュメント、配布カタログJSONの`version[0].version`、GitHubリリースのタグをv1.0.0にそろえる。内部番号から自動的に公開番号を繰り上げない。
+- 現在の`setup/SYNC_WeatherFX.catalog.json`は参照元をそのままコピーしたもの。記載済みのv1.0.0・公開日・ハッシュはWeatherFX用であり、AutoWritingの公開情報として流用しない。今はsetupを変更・実行しない。
+- AutoWritingの公開準備時に専用のカタログJSONを用意し、初回の`version`配列はv1.0.0の1件から開始する。製品ID、リポジトリ、ZIP名、インストール先、AUF2パスもSYNC_AutoWritingへ合わせる。コピー元や内部検証版の履歴を混ぜない。
+- JSONの`release_date`は実際の公開日とし、内部ビルド日やコピー元の日付を引き継がない。`XXH3_128`は公開するv1.0.0のAUF2そのものから再計算し、ZIPへ入れる実物と一致させる。
+- 設定・学習JSONの`schema`はデータ形式の番号であり、公開バージョンとは別管理。公開番号に合わせて変更しない。`Win64/LatestVerification`内JSONの`Version`は内部検査対象の番号であり、公開カタログの履歴を生成する根拠にしない。
 
 ## ビルド
 
@@ -76,6 +85,7 @@ cmd /c 'call "C:\Program Files (x86)\Embarcadero\Studio\37.0\bin\rsvars.bat" && 
 - Debug本体を検査EXEから読み込み、登録・最低バージョン・元字形との画素一致・逆シーク・速度と拡大率・透明度・合成・縦書き・学習IO・本番設定画面からの文字と筆記具の反映を確認した。
 - 最新の確定ビルド・検査記録は `Win64/LatestVerification` と `docs/IMPLEMENTATION.md` を参照する。
 - `Tests/run_tests.ps1 -Demo` で本番AUF2から20fpsのPNGを出力できる。`Tests/make_demo.py`（検査用Pillow）で `Sample/auto_writing.gif` と一覧画像を作成する。サンプルは実際のDLL出力で、AI画像や別の描画実装ではない。
+- 説明書用サンプルの配色はユーザー指定で **白背景・黒文字**。`RenderDemo`で明示指定し、本体の初期文字色（白）から独立させる。再生成だけの場合は `Tests/run_tests.ps1 -DemoOnly -OutputDirectory <出力先>` を使い、同出力先の`DemoFrames`を`Tests/make_demo.py`へ渡す。GIF・完成PNG・時系列PNGをまとめて更新する。
 
 ## 初期版の最終確認（2026-11-18）
 
@@ -142,3 +152,9 @@ cmd /c 'call "C:\Program Files (x86)\Embarcadero\Studio\37.0\bin\rsvars.bat" && 
 - 最終Debug / Releaseは警告0・エラー0。Debugは1,017,492項目、Releaseはデモを含む1,017,939項目が成功し、描画11画像が両構成で一致した。「自」「自動」の完成画像と「動」11画の終了時刻が旧版と一致する。白の初期値を使う本番出力の全インク画素がRGB(255,255,255)であることも確認した。
 - Releaseの専用UI検査は一度stage 31でポップアップが未表示のため中断し、コード無変更の再実行で全項目成功した。中断ログは `Win64/StrokeTransfer/ReleaseTests.FirstAttempt.log` に保存した。
 - 既存学習2件のSHA-256が作業前と一致。setup5件と共通4件も参照元と一致。AviUtl2が終了していることを確認して通常の配置先へRelease v0.1.5（4,595,712バイト）をコピーし、元AUF2とのSHA-256一致を確認した。詳細は `Win64/LatestVerification/ReleaseArtifact.json`。IDE・AviUtl2の起動/操作は行っていない。
+
+## 説明書用GIFの配色修正（2026-11-18）
+
+- ユーザー指定により説明書用GIFを白背景（#FFFFFF）・黒文字（#000000）へ変更し、完成PNGと時系列PNGも再生成した。本体の文字色初期値は白のまま。内部番号・公開用JSONは変更しない。
+- GIFの共通パレットに白・黒を固定し、参照パレットの近似検索で純白が灰色に変わらないよう純白・純黒画素の割当ても固定する。149枚の本番AUF2出力から生成し、保持フレーム統合後121フレーム・7.45秒・無限ループ。全フレームの背景白と完成文字の黒を確認した。
+- 再生成記録は `Win64/DocumentationDemo`。検査用EXEのDemoOnlyモードだけを実行し、IDE・AviUtl2の起動/操作や本体のビルド・差し替えは行っていない。

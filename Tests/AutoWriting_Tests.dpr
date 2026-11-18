@@ -933,11 +933,12 @@ procedure RenderDemo;
 var S: TWritingSettings; I,J,FrameCount: Integer; Duration,Time: Double; A: TWritingPixels;
 begin
   S:=DefaultWritingSettings; S.Text:='自動筆記'+sLineBreak+'文字が、動き出す。'; S.FontSize:=64;
+  S.InkColor:=$000000; // 説明書用だけ黒文字に固定する。本体の白い初期値は変更しない。
   S.Speed:=240; Duration:=Renderer.Duration(S); S.Speed:=S.Speed*Duration/6;
   Configure(S); Duration:=Renderer.Duration(S); SizeFrame(800,450);
   SetLength(HostInput,Scene.Width*Scene.Height);
   for J:=0 to High(HostInput) do
-  begin HostInput[J].R:=60; HostInput[J].G:=68; HostInput[J].B:=80; HostInput[J].A:=255 end;
+  begin HostInput[J].R:=255; HostInput[J].G:=255; HostInput[J].B:=255; HostInput[J].A:=255 end;
   ForceDirectories(TPath.Combine(OutputDirectory,'DemoFrames')); FrameCount:=Ceil((Duration+1.4)*20);
   for I:=0 to FrameCount do
   begin
@@ -992,7 +993,7 @@ begin
   try
     if ParamCount<2 then raise Exception.Create('Usage: AutoWriting_Tests.exe plugin.auf2 output-directory');
     OutputDirectory:=ExpandFileName(ParamStr(2)); ForceDirectories(OutputDirectory);
-    if not ((ParamCount>=3) and (ParamStr(3)='--glyph-samples')) then
+    if not ((ParamCount>=3) and ((ParamStr(3)='--glyph-samples') or (ParamStr(3)='--demo-only'))) then
     begin TestSettingsAndLearning; TestStrokeEditing; TestOverlappingReveal; TestSelectedStrokeOperations; TestFontCacheAndLayout end;
     Module:=LoadLibrary(PChar(ExpandFileName(ParamStr(1))));
     Check(Module<>0,'Cannot load production AUF2: '+SysErrorMessage(GetLastError));
@@ -1007,6 +1008,7 @@ begin
     Scene.Rate:=30; Scene.Scale:=1; Video.Scene:=@Scene; Video.Object_:=@Obj;
     Video.GetImageData:=GetImage; Video.SetImageData:=SetImage; Video.UserData:=Session;
     if (ParamCount>=3) and (ParamStr(3)='--glyph-samples') then RenderGlyphSamples
+    else if (ParamCount>=3) and (ParamStr(3)='--demo-only') then RenderDemo
     else begin TestFinalFont; TestProduction; TestSettingsDialog; TestNativeStrokeEditing end;
     if (ParamCount>=3) and (ParamStr(3)='--demo') then begin Video.UserData:=Session; RenderDemo end;
     Writeln('ALL PASS: ',Tests,' checks');

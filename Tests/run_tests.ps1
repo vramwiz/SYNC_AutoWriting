@@ -2,6 +2,7 @@
     [string]$PluginPath = 'C:\ProgramData\aviutl2\Plugin\SYNC_AutoWriting\SYNC_AutoWriting.auf2',
     [string]$OutputDirectory,
     [switch]$Demo,
+    [switch]$DemoOnly,
     [switch]$GlyphSamplesOnly,
     [string]$GlyphSampleText = '自'
 )
@@ -21,7 +22,8 @@ try {
         "-U$libraryDirectory;$libraryDirectory\JA" "-E$buildDirectory" "-NU$dcuDirectory" 'AutoWriting_Tests.dpr'
     if ($LASTEXITCODE -ne 0) { throw 'Test build failed.' }
     $testArguments = @($PluginPath, $OutputDirectory)
-    if ($Demo) { $testArguments += '--demo' }
+    if ($DemoOnly) { $testArguments += '--demo-only' }
+    elseif ($Demo) { $testArguments += '--demo' }
     elseif ($GlyphSamplesOnly) { $testArguments += @('--glyph-samples', $GlyphSampleText) }
     & (Join-Path $buildDirectory 'AutoWriting_Tests.exe') @testArguments
     if ($LASTEXITCODE -ne 0) { throw 'Production AUF2 tests failed.' }
