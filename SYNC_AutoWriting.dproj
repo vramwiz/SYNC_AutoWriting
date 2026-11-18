@@ -108,6 +108,8 @@
         <DCCReference Include="Source\Common\AutoWriting_Renderer.pas"/>
         <DCCReference Include="Source\Common\AutoWriting_Reveal.pas"/>
         <DCCReference Include="Source\Common\AutoWriting_Types.pas"/>
+        <DCCReference Include="Source\Common\AutoWriting_Vertices.pas"/>
+        <DCCReference Include="Source\Common\AutoWriting_Branches.pas"/>
         <DCCReference Include="Source\Plugin\Filter\AutoWriting_Parameters.pas"/>
         <DCCReference Include="Source\UI\AutoWriting_SettingsForm.pas"/>
         <DCCReference Include="Source\Plugin\Filter\SYNC_AutoWriting_FilterPlugin.pas"/>

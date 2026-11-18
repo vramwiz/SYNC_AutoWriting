@@ -43,8 +43,8 @@ begin
 end;
 
 function LoadGlyphLearning(Glyph: TWritingGlyph; out Warning: string): Boolean;
-var FileName: string; V: TJSONValue; J,O: TJSONObject; A,P,XY: TJSONArray;
-  I,K,Total: Integer; Paths: TArray<TStroke>; X,Y: Double;
+var FileName: string; V: TJSONValue; J,O: TJSONObject; A,P,XY,Vertices: TJSONArray;
+  I,K,Total,Index: Integer; Paths: TArray<TStroke>; X,Y: Double;
 begin
   Result:=False; Warning:=''; V:=nil; Lock.Acquire;
   try
@@ -77,6 +77,19 @@ begin
             raise EConvertError.Create('Path coordinate outside glyph');
           Paths[I].Points[K]:=PointF(X,Y);
         end;
+        Vertices:=O.GetValue<TJSONArray>('vertices',nil);
+        if Vertices<>nil then
+        begin
+          if Vertices.Count>P.Count then raise EConvertError.Create('Too many editing vertices');
+          SetLength(Paths[I].PinnedVertices,Vertices.Count);
+          for K:=0 to Vertices.Count-1 do
+          begin
+            Index:=Vertices.Items[K].AsType<Integer>;
+            if (Index<0) or (Index>=P.Count) then raise EConvertError.Create('Invalid editing vertex');
+            if (K>0) and (Index<=Paths[I].PinnedVertices[K-1]) then raise EConvertError.Create('Unordered editing vertices');
+            Paths[I].PinnedVertices[K]:=Index;
+          end;
+        end;
       end;
       Glyph.Strokes:=Paths; Glyph.Learned:=True; PrepareGlyphTiming(Glyph); Result:=True;
     except on E: Exception do Warning:=Glyph.Character+': '+E.Message end;
@@ -84,7 +97,7 @@ begin
 end;
 
 procedure SaveGlyphLearning(Glyph: TWritingGlyph);
-var J,O: TJSONObject; A,P,XY: TJSONArray; I,K: Integer; FileName,TempName: string;
+var J,O: TJSONObject; A,P,XY,Vertices: TJSONArray; I,K: Integer; FileName,TempName: string;
 begin
   if Length(Glyph.Strokes)=0 then Exit;
   J:=TJSONObject.Create; Lock.Acquire; TempName:='';
@@ -100,6 +113,11 @@ begin
       begin
         XY:=TJSONArray.Create; XY.Add(Glyph.Strokes[I].Points[K].X/AW_EM);
         XY.Add(Glyph.Strokes[I].Points[K].Y/AW_EM); P.AddElement(XY);
+      end;
+      if Length(Glyph.Strokes[I].PinnedVertices)>0 then
+      begin
+        Vertices:=TJSONArray.Create; O.AddPair('vertices',Vertices);
+        for K in Glyph.Strokes[I].PinnedVertices do Vertices.Add(K);
       end;
     end;
     FileName:=GlyphFile(Glyph); ForceDirectories(ExtractFilePath(FileName));

@@ -10,6 +10,8 @@ uses
   AviUtl2FilterTypes in 'Source\Lib\AviUtl2FilterTypes.pas',
   PluginFilterTable in 'Source\Lib\FilterTable\PluginFilterTable.pas',
   AutoWriting_Types in 'Source\Common\AutoWriting_Types.pas',
+  AutoWriting_Vertices in 'Source\Common\AutoWriting_Vertices.pas',
+  AutoWriting_Branches in 'Source\Common\AutoWriting_Branches.pas',
   AutoWriting_Reveal in 'Source\Common\AutoWriting_Reveal.pas',
   AutoWriting_Inference in 'Source\Common\AutoWriting_Inference.pas',
   AutoWriting_Editing in 'Source\Common\AutoWriting_Editing.pas',
@@ -41,7 +43,13 @@ exports
   RequiredVersion name 'RequiredVersion',
   InitializePlugin name 'InitializePlugin',
   UninitializePlugin name 'UninitializePlugin',
-  GetFilterPluginTable name 'GetFilterPluginTable';
+  GetFilterPluginTable name 'GetFilterPluginTable'
+{$IFDEF AW_PROFILE}
+  ,ResetWritingRenderProfile name 'ResetWritingRenderProfile'
+  ,ReadWritingRenderProfile name 'ReadWritingRenderProfile'
+  ,SetWritingProfileFullScan name 'SetWritingProfileFullScan'
+{$ENDIF}
+  ;
 
 begin
 end.

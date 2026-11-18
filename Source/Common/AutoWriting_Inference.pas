@@ -21,7 +21,7 @@ function MergeGlyphStrokes(Glyph: TWritingGlyph; StrokeIndex: Integer): Boolean;
 
 implementation
 
-uses System.SysUtils, System.Types, System.Math, System.Generics.Collections, AutoWriting_Reveal;
+uses System.SysUtils, System.Types, System.Math, System.Generics.Collections, AutoWriting_Reveal, AutoWriting_Vertices;
 
 const
   DX: array[0..7] of Integer = (0,1,1,1,0,-1,-1,-1);
@@ -179,6 +179,7 @@ begin
   if (Index<0) or (Index>=Length(Glyph.Strokes)) then Exit;
   with Glyph.Strokes[Index] do
   begin
+    PinnedVertices:=ReversePinnedVertices(PinnedVertices,System.Length(Points));
     for I:=0 to System.Length(Points) div 2-1 do
     begin P:=Points[I]; Points[I]:=Points[High(Points)-I]; Points[High(Points)-I]:=P end;
     Reversed:=not Reversed;
@@ -207,8 +208,10 @@ begin
   SetLength(Paths,Length(Glyph.Strokes)+1);
   for I:=0 to StrokeIndex do Paths[I]:=Glyph.Strokes[I];
   Paths[StrokeIndex].Points:=Copy(Source.Points,0,PointIndex+1);
+  Paths[StrokeIndex].PinnedVertices:=SlicePinnedVertices(Source.PinnedVertices,0,PointIndex);
   Paths[StrokeIndex+1]:=Source; Paths[StrokeIndex+1].ID:=NextID;
   Paths[StrokeIndex+1].Points:=Copy(Source.Points,PointIndex,Length(Source.Points)-PointIndex);
+  Paths[StrokeIndex+1].PinnedVertices:=SlicePinnedVertices(Source.PinnedVertices,PointIndex,High(Source.Points));
   for I:=StrokeIndex+1 to High(Glyph.Strokes) do Paths[I+1]:=Glyph.Strokes[I];
   Glyph.Strokes:=Paths; PrepareGlyphTiming(Glyph); Result:=True;
 end;
@@ -224,6 +227,8 @@ begin
   SetLength(Paths,Length(Glyph.Strokes)-1);
   for I:=0 to StrokeIndex do Paths[I]:=Glyph.Strokes[I];
   Offset:=Length(A); SetLength(Paths[StrokeIndex].Points,Offset+Length(B)-First);
+  Paths[StrokeIndex].PinnedVertices:=JoinPinnedVertices(Glyph.Strokes[StrokeIndex].PinnedVertices,
+    Glyph.Strokes[StrokeIndex+1].PinnedVertices,Offset-First);
   for J:=0 to High(A) do Paths[StrokeIndex].Points[J]:=A[J];
   for J:=First to High(B) do Paths[StrokeIndex].Points[Offset+J-First]:=B[J];
   for I:=StrokeIndex+1 to High(Paths) do Paths[I]:=Glyph.Strokes[I+1];

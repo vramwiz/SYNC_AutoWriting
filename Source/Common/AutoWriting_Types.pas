@@ -15,7 +15,8 @@ const
   AW_VERSION = '1.0.0';
 
 type
-  TPenKind = (pkPencil, pkBallpoint, pkFountain, pkBrush);
+  // 既存4種の保存番号0..3を変えず、新しい種類を末尾に追加する。
+  TPenKind = (pkPencil, pkBallpoint, pkFountain, pkBrush, pkNone, pkQuill);
   TCharacterKind = (ckKanji, ckHiragana, ckKatakana, ckNumber, ckLatin, ckSymbol);
   TWritingSettings = record
     Text, FontName: string;
@@ -24,7 +25,7 @@ type
     LetterGap, LineGap: Double;
     Ratios: array[TCharacterKind] of Double;
     InkColor: Cardinal;
-    PenSize, PenAngle, LiftHeight: Double;
+    PenSize, PenAngle, LiftHeight, LightX, LightY: Double;
     X, Y, Scale, Transparency, Speed: Double;
     Pen: TPenKind;
   end;
@@ -33,6 +34,8 @@ type
     Reversed: Boolean;
     // 128 emマスクの左上を原点とする中心線。距離は画間移動も含め同じ単位。
     Points: TArray<TPointF>;
+    // ユーザーが追加した操作点のPoints添字。自動の操作点は表示時に導出する。
+    PinnedVertices: TArray<Integer>;
     StartDistance, Length: Double;
   end;
   TWritingGlyph = class
@@ -48,6 +51,13 @@ type
   end;
   TWritingPixels = TArray<TPIXEL_RGBA>;
 
+const
+  AW_PEN_NAMES: array[TPenKind] of PWideChar = ('鉛筆','ボールペン','万年筆','毛筆','無し','羽ペン');
+  AW_PEN_ORDER: array[0..5] of TPenKind = (pkPencil,pkBallpoint,pkFountain,pkBrush,pkQuill,pkNone);
+
+function PenChoiceValue(Pen: TPenKind): Integer;
+function PenFromChoiceValue(Value: Integer): TPenKind;
+function PenChoiceIndex(Pen: TPenKind): Integer;
 function DefaultWritingSettings: TWritingSettings;
 function CharacterKind(const C: string): TCharacterKind;
 function SettingsJSON(const S: TWritingSettings): string;
@@ -61,6 +71,28 @@ function SafeNumber(Value, Default, MinValue, MaxValue: Double): Double;
 implementation
 
 uses System.Math, System.JSON, System.Generics.Collections, Winapi.Windows;
+
+function PenChoiceValue(Pen: TPenKind): Integer;
+begin
+  // ホストが識別値順に並べても「無し」が末尾になる値とする。
+  if Pen=pkNone then Result:=6 else Result:=Ord(Pen);
+end;
+
+function PenFromChoiceValue(Value: Integer): TPenKind;
+begin
+  case Value of
+    0..3: Result:=TPenKind(Value);
+    4,6: Result:=pkNone; // 直前の内部版で保存した無し4も描画時に受け付ける。
+    5: Result:=pkQuill;
+    else Result:=pkFountain;
+  end;
+end;
+
+function PenChoiceIndex(Pen: TPenKind): Integer;
+begin
+  for Result:=Low(AW_PEN_ORDER) to High(AW_PEN_ORDER) do if AW_PEN_ORDER[Result]=Pen then Exit;
+  Result:=2;
+end;
 
 function SafeNumber(Value, Default, MinValue, MaxValue: Double): Double;
 begin
@@ -77,8 +109,8 @@ begin
   Result.Ratios[ckKanji]:=1; Result.Ratios[ckHiragana]:=0.9;
   Result.Ratios[ckKatakana]:=0.95; Result.Ratios[ckNumber]:=0.9;
   Result.Ratios[ckLatin]:=1; Result.Ratios[ckSymbol]:=1;
-  Result.InkColor:=$FFFFFF; Result.PenSize:=1; Result.PenAngle:=-35;
-  Result.LiftHeight:=16; Result.Scale:=100; Result.Speed:=240;
+  Result.InkColor:=$FFFFFF; Result.PenSize:=1; Result.PenAngle:=35;
+  Result.LiftHeight:=16; Result.LightX:=-100; Result.LightY:=-100; Result.Scale:=100; Result.Speed:=240;
   Result.Pen:=pkFountain;
 end;
 
@@ -111,7 +143,8 @@ begin
     J.AddPair('letterGap',TJSONNumber.Create(S.LetterGap)); J.AddPair('lineGap',TJSONNumber.Create(S.LineGap));
     J.AddPair('ink',TJSONNumber.Create(Int64(S.InkColor)));
     J.AddPair('penSize',TJSONNumber.Create(S.PenSize)); J.AddPair('penAngle',TJSONNumber.Create(S.PenAngle));
-    J.AddPair('lift',TJSONNumber.Create(S.LiftHeight)); A:=TJSONArray.Create;
+    J.AddPair('lift',TJSONNumber.Create(S.LiftHeight));
+    J.AddPair('lightX',TJSONNumber.Create(S.LightX)); J.AddPair('lightY',TJSONNumber.Create(S.LightY)); A:=TJSONArray.Create;
     for K:=Low(K) to High(K) do A.Add(S.Ratios[K]);
     J.AddPair('ratios',A); Result:=J.ToJSON;
   finally J.Free end;
@@ -136,6 +169,7 @@ begin
     S.InkColor:=Round(Num('ink',S.InkColor,0,$FFFFFF));
     S.PenSize:=Num('penSize',S.PenSize,0.3,3); S.PenAngle:=Num('penAngle',S.PenAngle,-180,180);
     S.LiftHeight:=Num('lift',S.LiftHeight,0,80);
+    S.LightX:=Num('lightX',S.LightX,-400,400); S.LightY:=Num('lightY',S.LightY,-400,400);
     A:=J.GetValue<TJSONArray>('ratios');
     if (A<>nil) and (A.Count=6) then
       for K:=Low(K) to High(K) do S.Ratios[K]:=SafeNumber(A.Items[Ord(K)].AsType<Double>,S.Ratios[K],0.3,2);

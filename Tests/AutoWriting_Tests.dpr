@@ -12,12 +12,15 @@ uses System.SysUtils, System.Classes, System.Math, System.Types, System.Hash,
   System.IOUtils, System.Diagnostics, Winapi.Windows, Winapi.Messages, Winapi.CommCtrl, Vcl.Graphics, Vcl.Imaging.pngimage,
   AviUtl2FilterTypes in '..\Source\Lib\AviUtl2FilterTypes.pas',
   AutoWriting_Types in '..\Source\Common\AutoWriting_Types.pas',
+  AutoWriting_Vertices in '..\Source\Common\AutoWriting_Vertices.pas',
+  AutoWriting_Branches in '..\Source\Common\AutoWriting_Branches.pas',
   AutoWriting_Reveal in '..\Source\Common\AutoWriting_Reveal.pas',
   AutoWriting_Inference in '..\Source\Common\AutoWriting_Inference.pas',
   AutoWriting_Editing in '..\Source\Common\AutoWriting_Editing.pas',
   AutoWriting_Learning in '..\Source\Common\AutoWriting_Learning.pas',
   AutoWriting_Fonts in '..\Source\Common\AutoWriting_Fonts.pas',
-  AutoWriting_Renderer in '..\Source\Common\AutoWriting_Renderer.pas';
+  AutoWriting_Renderer in '..\Source\Common\AutoWriting_Renderer.pas',
+  AutoWriting_PenTests in 'AutoWriting_PenTests.pas';
 
 type
   TGetTable = function: PFILTER_PLUGIN_TABLE; cdecl;
@@ -33,19 +36,22 @@ var
   Table: PFILTER_PLUGIN_TABLE;
   TextItem,DetailsItem: PFILTER_ITEM_STRING;
   PenItem: PFILTER_ITEM_SELECT;
-  Tracks: array[0..4] of PFILTER_ITEM_TRACK;
+  Tracks: array[0..8] of PFILTER_ITEM_TRACK;
   Button: PFILTER_ITEM_BUTTON;
   Video: TFILTER_PROC_VIDEO; Obj: TOBJECT_INFO; Scene: TSCENE_INFO;
   Captured,HostInput: TWritingPixels;
   TextBacking,DetailBacking,OutputDirectory: string;
   Renderer: TWritingRenderer;
   SetCount,Tests: Integer;
-  DialogHandle,MemoHandle,PageHandle,PenHandle,ApplyHandle: HWND;
+  DialogHandle,MemoHandle,PageHandle,PenHandle,AngleHandle,ApplyHandle: HWND;
+  LightXHandle,LightYHandle: HWND;
+  PenSizeHandle: HWND;
+  ChangeAngleInDialog: Boolean;
   PreviewSurface,EditorSurface: HWND;
   UITimer: UINT_PTR;
-  UIStage,UICount,UIEdits: Integer;
+  UIStage,UICount,UIEdits,DialogPenChoice: Integer;
   UIError: string;
-  UIValues: array[0..3] of UTF8String;
+  UIValues: array[0..7] of UTF8String;
   EditingTimer: UINT_PTR;
   EditingStage,EditingTicks,EditingInitialCount: Integer;
   EditingStrokeList: HWND;
@@ -61,6 +67,10 @@ var
   EditingDragCapture: HWND;
   EditingDragPosition: LPARAM;
   EditingBeforeDragHash: string;
+  BranchTimer: UINT_PTR;
+  BranchStage,BranchTicks: Integer;
+  BranchFile,BranchError,BranchFontID,BranchCharacter,BranchBeforeHash: string;
+  BranchWidth,BranchHeight: Integer;
 
 procedure Check(Condition: Boolean; const MessageText: string);
 begin Inc(Tests); if not Condition then raise Exception.Create(MessageText) end;
@@ -88,7 +98,9 @@ begin
   TextBacking:=EncodeHostText(S.Text); DetailBacking:=SettingsJSON(S);
   TextItem^.Value:=PChar(TextBacking); DetailsItem^.Value:=PChar(DetailBacking);
   Tracks[0]^.Value:=S.X; Tracks[1]^.Value:=S.Y; Tracks[2]^.Value:=S.Scale;
-  Tracks[3]^.Value:=S.Transparency; Tracks[4]^.Value:=S.Speed; PenItem^.Value:=Ord(S.Pen);
+  Tracks[3]^.Value:=S.Transparency; Tracks[4]^.Value:=S.Speed; Tracks[5]^.Value:=S.PenAngle; PenItem^.Value:=PenChoiceValue(S.Pen);
+  Tracks[6]^.Value:=S.LightX; Tracks[7]^.Value:=S.LightY;
+  Tracks[8]^.Value:=S.PenSize*100;
 end;
 
 function Render(Time: Double): TWritingPixels;
@@ -122,7 +134,7 @@ begin
 end;
 
 procedure Bind;
-var P: PPointer; I,N: Integer; Name: string;
+var P: PPointer; I,N: Integer; Name: string; Choice: ^TFILTER_ITEM_SELECT_ITEM;
 begin
   P:=PPointer(Table^.Items); N:=0;
   while P^<>nil do
@@ -137,12 +149,24 @@ begin
     if Name='拡大率' then Tracks[2]:=PFILTER_ITEM_TRACK(P^);
     if Name='透明度' then Tracks[3]:=PFILTER_ITEM_TRACK(P^);
     if Name='ペン速度' then Tracks[4]:=PFILTER_ITEM_TRACK(P^);
+    if Name='ペン角度' then Tracks[5]:=PFILTER_ITEM_TRACK(P^);
+    if Name='光源X' then Tracks[6]:=PFILTER_ITEM_TRACK(P^);
+    if Name='光源Y' then Tracks[7]:=PFILTER_ITEM_TRACK(P^);
+    if Name='ペンサイズ' then Tracks[8]:=PFILTER_ITEM_TRACK(P^);
     Inc(P);
   end;
-  Check(N=10,'Expected 8 visible parameters plus hidden details and hiding rule');
+  Check(N=14,'Expected 12 visible parameters plus hidden details and hiding rule');
   Check((TextItem<>nil) and (DetailsItem<>nil) and (PenItem<>nil) and (Button<>nil),'Missing parameters');
-  for I:=0 to 4 do Check(Tracks[I]<>nil,'Missing track');
+  for I:=0 to 8 do Check(Tracks[I]<>nil,'Missing track');
+  Check((Tracks[8]^.Value=100) and (Abs(Tracks[8]^.Step-0.01)<1E-12),'Pen size must default to 100 with step 0.01');
   Check(Assigned(Button^.Callback2),'Settings callback missing');
+  Check(PenItem^.Value=2,'Existing fountain default ID must stay 2'); Choice:=Pointer(PenItem^.List);
+  for I:=0 to 5 do begin
+    Check((Choice^.Name<>nil) and (string(Choice^.Name)=string(AW_PEN_NAMES[AW_PEN_ORDER[I]])) and
+      (Choice^.Value=PenChoiceValue(AW_PEN_ORDER[I])),'Pen display order or stored ID mismatch');
+    if I>0 then Check(Choice^.Value>PenChoiceValue(AW_PEN_ORDER[I-1]),'Host identifier order must match the display order'); Inc(Choice);
+  end;
+  Check(Choice^.Name=nil,'Pen list must have six choices and a nil terminator');
 end;
 
 procedure TestSettingsAndLearning;
@@ -154,7 +178,11 @@ begin
   S.FontName:='ＭＳ 明朝'; S.Vertical:=True; S.Ratios[ckHiragana]:=0.75; S.PenAngle:=45;
   R:=DefaultWritingSettings; ReadSettingsJSON(SettingsJSON(S),R);
   Check((R.FontName=S.FontName) and R.Vertical and (R.Ratios[ckHiragana]=0.75) and (R.PenAngle=45),'Settings persistence');
-  ReadSettingsJSON('{broken',R); Check(R.FontName=S.FontName,'Malformed settings changed font');
+  S.LightX:=120.25; S.LightY:=-180.75; ReadSettingsJSON(SettingsJSON(S),R);
+  Check((R.LightX=S.LightX) and (R.LightY=S.LightY),'Light XY persistence');
+  R:=DefaultWritingSettings; ReadSettingsJSON('{"schema":1,"penAngle":-35}',R);
+  Check((R.LightX=-100) and (R.LightY=-100),'Old settings must use default lighting');
+  R:=S; ReadSettingsJSON('{broken',R); Check(R.FontName=S.FontName,'Malformed settings changed font');
   Characters:=UnicodeCharacters('あ'+#$D842#$DFB7+sLineBreak+'い');
   Check((Length(Characters)=4) and (Length(Characters[1])=2) and (Characters[2]=#10),'Unicode/newline split');
   ID:=THashSHA2.GetHashString('AutoWriting verification '+TGUID.NewGuid.ToString);
@@ -275,6 +303,72 @@ begin
   end;
 end;
 
+procedure TestEditingVertices;
+var G,Loaded: TWritingGlyph; State: TGlyphEditState; Hit: TStrokeHit; Original: TStroke;
+  Vertices,HitPoints: TArray<Integer>; Hits: TArray<TStrokeHit>; Reveal: TArray<Single>;
+  I,Index,Joined: Integer; Before: Double;
+  Folder,FileName,Warning: string;
+begin
+  G:=TWritingGlyph.Create; Loaded:=TWritingGlyph.Create; Folder:='';
+  try
+    G.Width:=64; G.Height:=48; G.Character:='頂';
+    G.FontID:=THashSHA2.GetHashString('Sparse editing vertices '+TGUID.NewGuid.ToString);
+    Folder:=TPath.Combine(TPath.Combine(LearningDirectory,'Fonts'),G.FontID); FileName:=TPath.Combine(Folder,'9802.json');
+    SetLength(G.Mask,64*48); for I:=0 to 50 do G.Mask[20*64+I]:=255;
+    SetLength(G.Strokes,1); SetLength(G.Strokes[0].Points,51);
+    for I:=0 to 50 do G.Strokes[0].Points[I]:=PointF(I,20);
+    PrepareGlyphTiming(G); Before:=G.TotalDistance; Reveal:=Copy(G.Reveal);
+    Vertices:=EditingVertices(G.Strokes[0]);
+    Check((Length(Vertices)=2) and (Vertices[0]=0) and (Vertices[1]=50),'Straight path must expose only its endpoints');
+    Check(Length(G.Strokes[0].Points)=51,'Editing handle reduction discarded rendering samples');
+    Hit:=HitStroke(G,PointF(25.5,20),1,0); State:=CaptureGlyphState(G);
+    Check(CreateStrokeVertex(G,Hit,Index),'Cannot create a vertex on a sparse straight path');
+    Check((Index=26) and (G.Strokes[0].Points[Index]=PointF(25.5,20)),'Created vertex is not at the requested line position');
+    Vertices:=EditingVertices(G.Strokes[0]); Check(Length(Vertices)=3,'Created collinear vertex was hidden');
+    Check(Abs(G.TotalDistance-Before)<1E-6,'Creating a collinear vertex changed writing time');
+    for I:=0 to High(Reveal) do Check(Abs(G.Reveal[I]-Reveal[I])<1E-5,'Creating a vertex changed the original reveal');
+    Check(Length(State.Strokes[0].Points)=51,'Vertex insertion changed the undo snapshot');
+    SaveGlyphLearning(G); Loaded.FontID:=G.FontID; Loaded.Character:=G.Character;
+    Loaded.Width:=G.Width; Loaded.Height:=G.Height;
+    Check(LoadGlyphLearning(Loaded,Warning) and (Warning=''),'Pinned vertex did not reload');
+    Check((Length(Loaded.Strokes[0].PinnedVertices)=1) and (Loaded.Strokes[0].PinnedVertices[0]=Index),'Learning lost a pinned vertex');
+    State:=CaptureGlyphState(G); Original:=State.Strokes[0];
+    Check(MovePathVertex(Original,Index,PointF(25.5,26),G.Strokes[0]),'Cannot move a sparse editing vertex');
+    Check((G.Strokes[0].Points[0]=PointF(0,20)) and (G.Strokes[0].Points[High(G.Strokes[0].Points)]=PointF(50,20)),
+      'Moving an interior vertex moved its neighboring anchors');
+    Check((G.Strokes[0].Points[Index-1].Y>25) and (G.Strokes[0].Points[Index+1].Y>25),'Moving a vertex left an isolated spike');
+    for I:=0 to High(Original.Points) do Check(Original.Points[I].Y=20,'Deformation mutated the original path');
+    RestoreGlyphState(G,State); ReverseGlyphStroke(G,0);
+    Check(G.Strokes[0].Points[G.Strokes[0].PinnedVertices[0]]=PointF(25.5,20),'Reverse lost the physical pinned vertex');
+    ReverseGlyphStroke(G,0); Check(G.Strokes[0].PinnedVertices[0]=Index,'Reverse roundtrip lost vertex index');
+    Check(SplitGlyphStroke(G,0,Index),'Cannot split at a created vertex');
+    Check((G.Strokes[0].PinnedVertices[0]=High(G.Strokes[0].Points)) and (G.Strokes[1].PinnedVertices[0]=0),
+      'Split did not remap both copies of the pinned endpoint');
+    Check(JoinStrokeEndpoints(G,0,False,1,True,Joined),'Cannot rejoin vertex split');
+    Check((Length(G.Strokes[0].PinnedVertices)=1) and (G.Strokes[0].PinnedVertices[0]=Index),'Join duplicated or misplaced the vertex');
+    G.Strokes[0].PinnedVertices[0]:=0;
+    Check(State.Strokes[0].PinnedVertices[0]=Index,'Vertex metadata is shared with undo history');
+    Original:=Default(TStroke); Original.Points:=[PointF(0,0),PointF(8,0),PointF(8,8),PointF(0,8),PointF(0,0)];
+    Vertices:=EditingVertices(Original); Check(Length(Vertices)=5,'Closed path lost its corners');
+    G.Strokes:=nil; SetLength(G.Strokes,2);
+    G.Strokes[0].Points:=[PointF(0,10),PointF(20,10)];
+    G.Strokes[1].Points:=[PointF(10,10),PointF(10,20)];
+    Hits:=HitEditingPaths(G,PointF(10,10),0.5,0.75,HitPoints);
+    Check((Length(Hits)=2) and (Hits[0].Stroke=1) and (HitPoints[0]=0) and
+      (Hits[1].Stroke=0) and (HitPoints[1]=-1),'Another stroke endpoint hid an unanchored crossing line');
+    Check(SplitStrokeAt(G,Hits[1]) and (Length(G.Strokes)=3),'Cannot split a sparse line at another stroke endpoint');
+    SetLength(G.Strokes,1); G.Strokes[0]:=Default(TStroke);
+    G.Strokes[0].Points:=[PointF(0,0),PointF(10,10),PointF(0,10),PointF(10,0)];
+    Hits:=HitEditingPaths(G,PointF(5,5),0.5,0.75,HitPoints);
+    Check((Length(Hits)=2) and (Hits[0].Segment=0) and (Hits[1].Segment=2),'Self-intersection must retain both line positions');
+    Writeln('PASS sparse straight handles, exact line vertex, continuous deformation, learning and vertex remapping');
+  finally
+    Loaded.Free; G.Free;
+    if (Folder<>'') and TFile.Exists(FileName) then TFile.Delete(FileName);
+    if (Folder<>'') and TDirectory.Exists(Folder) then TDirectory.Delete(Folder,False);
+  end;
+end;
+
 procedure TestOverlappingReveal;
 var G: TWritingGlyph; X,Y: Integer; Mask: TBytes; FirstEnd: Double;
 begin
@@ -353,6 +447,152 @@ begin
     Check(not JoinSelectedStrokes(G,[0],Index),'Single selection join should be disabled');
     Writeln('PASS multi-selection insertion, block movement, ordered join and unchanged IDs');
   finally G.Free end;
+end;
+
+procedure MakeBranchFixture(G: TWritingGlyph; BranchFirst: Boolean);
+var Main,Branch,Other: TStroke;
+begin
+  Main:=Default(TStroke); Main.ID:=73; Main.PinnedVertices:=[1];
+  Main.Points:=[PointF(14,7),PointF(14,16),PointF(13,26),PointF(12,36),PointF(12,45),
+    PointF(15,50),PointF(19,50),PointF(24,46),PointF(28,40),PointF(30,34)];
+  Branch:=Default(TStroke); Branch.ID:=41; Branch.PinnedVertices:=[3];
+  Branch.Points:=[PointF(15,50),PointF(15,53),PointF(16,56),PointF(16,60)];
+  Other:=Default(TStroke); Other.ID:=99; Other.Points:=[PointF(50,8),PointF(56,14)];
+  if BranchFirst then G.Strokes:=[Branch,Other,Main] else G.Strokes:=[Main,Other,Branch];
+  PrepareGlyphTiming(G);
+end;
+
+procedure CheckAbsorbedBranch(G: TWritingGlyph; const StartPoint,EndPoint: TPointF);
+var I,Visits: Integer; TipPinned: Boolean;
+begin
+  Check((Length(G.Strokes)=2) and (G.Strokes[0].ID=73) and (G.Strokes[1].ID=99),
+    'Branch absorption lost the main identity or changed an unselected stroke');
+  Check((G.Strokes[0].Points[0]=StartPoint) and (G.Strokes[0].Points[High(G.Strokes[0].Points)]=EndPoint),
+    'Branch absorption changed main direction or endpoints');
+  Visits:=0; TipPinned:=False;
+  for I:=0 to High(G.Strokes[0].Points) do
+  begin
+    if Distance(G.Strokes[0].Points[I],PointF(16,60))<0.01 then Inc(Visits);
+    if I>0 then Check(Distance(G.Strokes[0].Points[I-1],G.Strokes[0].Points[I])<2.5,
+      'Branch absorption left a jump or a sharp isolated point');
+  end;
+  for I in G.Strokes[0].PinnedVertices do
+    if Distance(G.Strokes[0].Points[I],PointF(16,60))<0.01 then TipPinned:=True;
+  Check((Visits=1) and TipPinned,'Main must pass the branch tip once and expose its editing vertex');
+end;
+
+procedure SaveBranchDiagram(G: TWritingGlyph; const FileName: string);
+const Colors: array[0..4] of TColor=($4848D6,$CE8742,$74A153,$B667B1,$C2B13C);
+var Bitmap: TBitmap; PNG: TPngImage; I,J,X,Y: Integer; Fit: Double; P,Q: TPointF;
+  Row: PByte;
+begin
+  Fit:=4;
+  Bitmap:=TBitmap.Create; PNG:=TPngImage.Create;
+  try
+    Bitmap.PixelFormat:=pf32bit; Bitmap.SetSize(Max(1,G.Width),Max(1,G.Height));
+    for Y:=0 to G.Height-1 do
+    begin
+      Row:=Bitmap.ScanLine[Y];
+      for X:=0 to G.Width-1 do
+      begin
+        I:=255-G.Mask[Y*G.Width+X] div 5;
+        Row[X*4]:=I; Row[X*4+1]:=I; Row[X*4+2]:=I; Row[X*4+3]:=255;
+      end;
+    end;
+    var CanvasImage: TBitmap; CanvasImage:=TBitmap.Create;
+    try
+      CanvasImage.SetSize(Round(G.Width*Fit)+40,Round(G.Height*Fit)+40);
+      CanvasImage.Canvas.Brush.Color:=clWhite; CanvasImage.Canvas.FillRect(CanvasImage.Canvas.ClipRect);
+      CanvasImage.Canvas.StretchDraw(Rect(20,20,20+Round(G.Width*Fit),20+Round(G.Height*Fit)),Bitmap);
+      for I:=0 to High(G.Strokes) do
+      begin
+        CanvasImage.Canvas.Pen.Width:=3; CanvasImage.Canvas.Pen.Color:=Colors[I mod Length(Colors)];
+        for J:=0 to High(G.Strokes[I].Points) do
+        begin
+          P:=G.Strokes[I].Points[J]; X:=20+Round(P.X*Fit); Y:=20+Round(P.Y*Fit);
+          if J=0 then CanvasImage.Canvas.MoveTo(X,Y) else CanvasImage.Canvas.LineTo(X,Y);
+        end;
+        for J in EditingVertices(G.Strokes[I]) do
+        begin
+          P:=G.Strokes[I].Points[J]; X:=20+Round(P.X*Fit); Y:=20+Round(P.Y*Fit);
+          CanvasImage.Canvas.Brush.Color:=clWhite; CanvasImage.Canvas.Ellipse(X-4,Y-4,X+5,Y+5);
+        end;
+        P:=G.Strokes[I].Points[0]; Q:=G.Strokes[I].Points[High(G.Strokes[I].Points)];
+        CanvasImage.Canvas.Brush.Color:=Colors[I mod Length(Colors)];
+        X:=20+Round(P.X*Fit); Y:=20+Round(P.Y*Fit); CanvasImage.Canvas.Ellipse(X-6,Y-6,X+7,Y+7);
+        X:=20+Round(Q.X*Fit); Y:=20+Round(Q.Y*Fit); CanvasImage.Canvas.Rectangle(X-6,Y-6,X+7,Y+7);
+      end;
+      PNG.Assign(CanvasImage); PNG.SaveToFile(TPath.Combine(OutputDirectory,FileName));
+    finally CanvasImage.Free end;
+  finally PNG.Free; Bitmap.Free end;
+end;
+
+procedure TestBranchAbsorption;
+var G,Loaded,Actual,Work: TWritingGlyph; Engine: TWritingFontEngine; S: TWritingSettings;
+  State,After: TGlyphEditState; MainSide,BranchSide,Row,MainIndex,BranchIndex,I,Index: Integer;
+  StartPoint,EndPoint: TPointF; Mask: TBytes; Attachment: TStrokeBranch;
+  Folder,FileName,Warning: string; Reversed: Boolean;
+begin
+  G:=TWritingGlyph.Create; Loaded:=TWritingGlyph.Create; Folder:='';
+  try
+    G.Width:=80; G.Height:=72; SetLength(G.Mask,80*72); FillChar(G.Mask[0],Length(G.Mask),255); Mask:=Copy(G.Mask);
+    for Row:=0 to 1 do for MainSide:=0 to 1 do for BranchSide:=0 to 1 do
+    begin
+      MakeBranchFixture(G,Row=1); MainIndex:=0; BranchIndex:=2;
+      if Row=1 then begin MainIndex:=2; BranchIndex:=0 end;
+      if MainSide=1 then ReverseGlyphStroke(G,MainIndex);
+      if BranchSide=1 then ReverseGlyphStroke(G,BranchIndex);
+      StartPoint:=G.Strokes[MainIndex].Points[0]; EndPoint:=G.Strokes[MainIndex].Points[High(G.Strokes[MainIndex].Points)];
+      Reversed:=G.Strokes[MainIndex].Reversed; State:=CaptureGlyphState(G);
+      Check(FindStrokeBranch(G.Strokes[MainIndex],G.Strokes[BranchIndex],Attachment),'Cannot detect endpoint-to-interior branch');
+      Check(JoinSelectedStrokes(G,[2,0],Index) and (Index=0),'Join did not absorb an interior branch');
+      CheckAbsorbedBranch(G,StartPoint,EndPoint);
+      Check(G.Strokes[0].Reversed=Reversed,'Absorption changed the main reversed flag');
+      Check(CompareMem(@Mask[0],@G.Mask[0],Length(Mask)),'Absorption modified the font mask');
+      After:=CaptureGlyphState(G); RestoreGlyphState(G,State);
+      Check((Length(G.Strokes)=3) and (Length(G.Strokes[MainIndex].Points)=10),'Undo did not restore branch geometry');
+      RestoreGlyphState(G,After); CheckAbsorbedBranch(G,StartPoint,EndPoint);
+    end;
+    G.Character:='枝'; G.FontID:=THashSHA2.GetHashString('Branch absorption '+TGUID.NewGuid.ToString);
+    Folder:=TPath.Combine(TPath.Combine(LearningDirectory,'Fonts'),G.FontID); FileName:=TPath.Combine(Folder,'679D.json');
+    SaveGlyphLearning(G); Loaded.FontID:=G.FontID; Loaded.Character:=G.Character; Loaded.Width:=G.Width; Loaded.Height:=G.Height;
+    Check(LoadGlyphLearning(Loaded,Warning) and (Warning=''),'Absorbed branch did not reload');
+    CheckAbsorbedBranch(Loaded,StartPoint,EndPoint);
+    MakeBranchFixture(G,True);
+    var Main,Branch: TStroke; Main:=G.Strokes[2]; Branch:=Default(TStroke); Branch.ID:=42;
+    Branch.Points:=[PointF(13,26),PointF(7,26)]; G.Strokes:=[G.Strokes[0],G.Strokes[1],Branch,Main];
+    Check(JoinSelectedStrokes(G,[0,2,3],Index),'Cannot absorb multiple branches before joining row order');
+    CheckAbsorbedBranch(G,PointF(14,7),PointF(30,34));
+    var Found: Boolean; Found:=False;
+    for I in G.Strokes[0].PinnedVertices do if Distance(G.Strokes[0].Points[I],PointF(7,26))<0.01 then Found:=True;
+    Check(Found,'Second absorbed branch tip was lost');
+    Main.Points:=[PointF(2,4),PointF(25,4)]; Main.PinnedVertices:=nil;
+    Branch.Points:=[PointF(25,4),PointF(31,4)]; Branch.PinnedVertices:=nil;
+    Check(not FindStrokeBranch(Main,Branch,Attachment),'Ordinary endpoint join was misclassified as a branch');
+    Branch.Points:=[PointF(8,4),PointF(12,10),PointF(18,4)];
+    Check(not FindStrokeBranch(Main,Branch,Attachment),'A double-attached loop was treated as a branch');
+    Branch.Points:=[PointF(8,5),PointF(20,5)];
+    Check(not FindStrokeBranch(Main,Branch,Attachment),'A nearby parallel path was treated as a branch');
+    Writeln('PASS branch absorption in both directions and row orders, multiple branches, undo, learning and ordinary joins');
+  finally
+    Loaded.Free; G.Free;
+    if (Folder<>'') and TFile.Exists(FileName) then TFile.Delete(FileName);
+    if (Folder<>'') and TDirectory.Exists(Folder) then TDirectory.Delete(Folder,False);
+  end;
+  // 現在の「に」を読取専用で複製する。ユーザー学習は保存せず、診断画像だけ出す。
+  Engine:=TWritingFontEngine.Create; Work:=TWritingGlyph.Create;
+  try
+    S:=DefaultWritingSettings; Engine.Configure(S); Actual:=Engine.Glyph('に');
+    if Length(Actual.Strokes)>=2 then if FindStrokeBranch(Actual.Strokes[0],Actual.Strokes[1],Attachment) then
+    begin
+      Work.Width:=Actual.Width; Work.Height:=Actual.Height; Work.Mask:=Copy(Actual.Mask);
+      State:=CaptureGlyphState(Actual); RestoreGlyphState(Work,State);
+      SaveBranchDiagram(Work,'branch_before.png');
+      Check(JoinSelectedStrokes(Work,[0,1],Index),'Actual に branch absorption failed');
+      SaveBranchDiagram(Work,'branch_after.png');
+      Check(Length(Work.Strokes)=Length(Actual.Strokes)-1,'Actual に branch was not removed');
+    end;
+  finally Work.Free; Engine.Free end;
 end;
 
 procedure TestFontCacheAndLayout;
@@ -466,6 +706,10 @@ begin
   if string(Item)='表示文字列' then Result:=PAnsiChar(UIValues[1]);
   if string(Item)='ペン種類' then Result:=PAnsiChar(UIValues[2]);
   if string(Item)='ペン速度' then Result:=PAnsiChar(UIValues[3]);
+  if string(Item)='ペン角度' then Result:=PAnsiChar(UIValues[4]);
+  if string(Item)='光源X' then Result:=PAnsiChar(UIValues[5]);
+  if string(Item)='光源Y' then Result:=PAnsiChar(UIValues[6]);
+  if string(Item)='ペンサイズ' then Result:=PAnsiChar(UIValues[7]);
 end;
 
 function UISet(Handle: OBJECT_HANDLE; Effect,Item: PWideChar; Value: PAnsiChar): Boolean; cdecl;
@@ -476,6 +720,10 @@ begin
   if string(Item)='表示文字列' then begin UIValues[1]:=UTF8String(Value); TextBacking:=string(UIValues[1]); TextItem^.Value:=PChar(TextBacking); Result:=True end;
   if string(Item)='ペン種類' then begin UIValues[2]:=UTF8String(Value); Result:=True end;
   if string(Item)='ペン速度' then begin UIValues[3]:=UTF8String(Value); Result:=True end;
+  if string(Item)='ペン角度' then begin UIValues[4]:=UTF8String(Value); Result:=True end;
+  if string(Item)='光源X' then begin UIValues[5]:=UTF8String(Value); Result:=True end;
+  if string(Item)='光源Y' then begin UIValues[6]:=UTF8String(Value); Result:=True end;
+  if string(Item)='ペンサイズ' then begin UIValues[7]:=UTF8String(Value); Result:=True end;
   if Result then Inc(UIEdits);
 end;
 
@@ -493,7 +741,11 @@ begin
   GetClassName(Wnd,Name,Length(Name)); GetWindowText(Wnd,Text,Length(Text));
   if string(Name)='TMemo' then MemoHandle:=Wnd;
   if string(Name)='TPageControl' then PageHandle:=Wnd;
-  if (string(Name)='TComboBox') and (SendMessage(Wnd,CB_GETCOUNT,0,0)=4) then PenHandle:=Wnd;
+  if (string(Name)='TComboBox') and (SendMessage(Wnd,CB_GETCOUNT,0,0)=6) then PenHandle:=Wnd;
+  if (string(Name)='TSpinEdit') and (string(Text)='35') then AngleHandle:=Wnd;
+  if (string(Name)='TSpinEdit') and (string(Text)='-100') then LightXHandle:=Wnd;
+  if (string(Name)='TSpinEdit') and (string(Text)='-140') then LightYHandle:=Wnd;
+  if string(Name)='TNumberBox' then PenSizeHandle:=Wnd;
   if (string(Name)='TButton') and ((string(Text)='適用して閉じる') or (string(Text)='キャンセル') or
     (string(Text)='元に戻す') or (string(Text)='やり直す')) then ApplyHandle:=Wnd;
   if ((string(Name)='TListBox') or (string(Name)='TWritingStrokeListBox')) and
@@ -613,8 +865,25 @@ begin
         CheckRetainedFrame(PreviewSurface,'Text preview');
         CaptureDialog('ui_preview.png');
         SendMessage(MemoHandle,WM_SETTEXT,0,LPARAM(PChar('自'+sLineBreak+'本文の更新')));
-        SendMessage(PenHandle,CB_SETCURSEL,1,0);
+        Check(SendMessage(PenHandle,CB_GETCURSEL,0,0)=2,'Opening settings changed the saved fountain pen');
+        SendMessage(PenHandle,CB_SETCURSEL,DialogPenChoice,0);
         SendMessage(GetParent(PenHandle),WM_COMMAND,(GetDlgCtrlID(PenHandle) and $FFFF) or (CBN_SELCHANGE shl 16),LPARAM(PenHandle));
+        Check(AngleHandle<>0,'Missing pen-angle control');
+        if ChangeAngleInDialog then
+        begin
+          SendMessage(AngleHandle,WM_SETTEXT,0,LPARAM(PChar('-20')));
+          SendMessage(GetParent(AngleHandle),WM_COMMAND,
+            (GetDlgCtrlID(AngleHandle) and $FFFF) or (EN_CHANGE shl 16),LPARAM(AngleHandle));
+          Check((LightXHandle<>0) and (LightYHandle<>0),'Missing light XY controls');
+          SendMessage(LightXHandle,WM_SETTEXT,0,LPARAM(PChar('180')));
+          SendMessage(GetParent(LightXHandle),WM_COMMAND,(GetDlgCtrlID(LightXHandle) and $FFFF) or (EN_CHANGE shl 16),LPARAM(LightXHandle));
+          SendMessage(LightYHandle,WM_SETTEXT,0,LPARAM(PChar('160')));
+          SendMessage(GetParent(LightYHandle),WM_COMMAND,(GetDlgCtrlID(LightYHandle) and $FFFF) or (EN_CHANGE shl 16),LPARAM(LightYHandle));
+          Check(PenSizeHandle<>0,'Missing fractional pen size control');
+          SendMessage(PenSizeHandle,WM_SETTEXT,0,LPARAM(PChar('150.25')));
+          SendMessage(GetParent(PenSizeHandle),WM_COMMAND,(GetDlgCtrlID(PenSizeHandle) and $FFFF) or (EN_CHANGE shl 16),LPARAM(PenSizeHandle));
+          SendMessage(PenSizeHandle,WM_KEYDOWN,VK_UP,0);
+        end;
         UIStage:=1;
       end;
       1: begin UIStage:=2 end;
@@ -657,21 +926,44 @@ begin
 end;
 
 procedure TestSettingsDialog;
-var S: TWritingSettings; Edit: TEDIT_SECTION;
+var S,R: TWritingSettings; Edit: TEDIT_SECTION; Mode: Integer;
 begin
-  S:=DefaultWritingSettings; S.Speed:=240.25; Configure(S);
+  for Mode:=0 to 3 do
+  begin
+  DialogHandle:=0; MemoHandle:=0; PageHandle:=0; PenHandle:=0; AngleHandle:=0;
+  LightXHandle:=0; LightYHandle:=0; PenSizeHandle:=0;
+  ApplyHandle:=0; PreviewSurface:=0; EditorSurface:=0; UIStage:=0; UICount:=0; UIEdits:=0; UIError:='';
+  ChangeAngleInDialog:=Mode=1;
+  DialogPenChoice:=1; if Mode=2 then DialogPenChoice:=5 else if Mode=3 then DialogPenChoice:=4;
+  S:=DefaultWritingSettings; S.Speed:=240.25; S.PenAngle:=35.25; Configure(S);
+  S.LightX:=-100.25; S.LightY:=-140.25; S.PenSize:=1.00005; Configure(S);
   UIValues[0]:=UTF8String(DetailBacking); UIValues[1]:=UTF8String(TextBacking);
-  UIValues[2]:='万年筆'; UIValues[3]:='240.25,480,1'; FillChar(Edit,SizeOf(Edit),0);
+  UIValues[2]:='万年筆'; UIValues[3]:='240.25,480,1'; UIValues[4]:='35.25,70,1'; FillChar(Edit,SizeOf(Edit),0);
+  UIValues[5]:='-100.25,180,1'; UIValues[6]:='-140.25,160,1'; UIValues[7]:='100.005,200,1';
   Edit.GetObjectItemValue:=UIGet; Edit.SetObjectItemValue:=UISet;
   UITimer:=SetTimer(0,0,250,@UITick);
   Check(UITimer<>0,'Cannot start UI test timer');
   try Button^.Callback2(@Edit,Pointer(1234),'自動筆記:2','設定')
   finally if UITimer<>0 then KillTimer(0,UITimer) end;
   Check(UIError='','Settings UI failure: '+UIError); Check(UIStage=5,'Settings UI did not finish');
-  Check(UIEdits=2,'Only changed text and pen should be saved; unchanged speed must be preserved');
+  Check(UIEdits=2+Ord(Mode=1)*5,Format('Only changed host items should be saved (mode %d, writes %d)',[Mode,UIEdits]));
   Check(DecodeHostText(string(UIValues[1]))='自'+sLineBreak+'本文の更新','UI text not sent to host');
-  Check(string(UIValues[2])='ボールペン','UI pen not sent to host');
+  Check(string(UIValues[2])=string(AW_PEN_NAMES[AW_PEN_ORDER[DialogPenChoice]]),'UI pen not sent to host');
   Check(string(UIValues[3])='240.25,480,1','Unedited animated fractional speed was overwritten');
+  if Mode<>1 then begin
+    Check(string(UIValues[4])='35.25,70,1','Unedited animated fractional angle was overwritten');
+    Check((string(UIValues[5])='-100.25,180,1') and (string(UIValues[6])='-140.25,160,1'),'Unedited light animation was overwritten');
+    Check(string(UIValues[7])='100.005,200,1','Unedited fractional pen size animation was overwritten');
+  end
+  else begin
+    Check(string(UIValues[4])='-20','UI angle not sent to host');
+    R:=DefaultWritingSettings; ReadSettingsJSON(string(UIValues[0]),R);
+    Check(R.PenAngle=-20,'Changed angle missing from detailed settings');
+    Check((string(UIValues[5])='180') and (string(UIValues[6])='160') and (R.LightX=180) and (R.LightY=160),'Light XY not sent to host and details');
+    Check((Abs(R.PenSize-1.5026)<1E-10) and (string(UIValues[7])='150.26'),'Pen size 0.01 step not sent to host and details');
+  end;
+  end;
+  ChangeAngleInDialog:=False;
   Writeln('PASS close-to-apply settings, removed buttons, multiline text and pen synchronization');
   Writeln('PASS text and single-character preview retain their frame during background erase');
 end;
@@ -794,14 +1086,39 @@ begin
         CaptureDialog('ui_edit_before.png'); EditingStage:=2;
       end;
       2: begin
-        EditingClick(EditingPoint);
         Check(not TFile.Exists(EditingFile),'Selecting a point saved learning');
         CaptureDialog('ui_point_selected.png'); EditingStage:=3; PostContext(EditorSurface,EditingPoint);
       end;
       3: begin
         Menu:=OpenPopupHandle;
         Check(GetMenuItemCount(Menu)>=8,'Editor popup missing actions');
-        CaptureWindow(PopupWindow,'ui_point_menu.png'); EditingStage:=30; ChoosePopupItem(1);
+        Check(GetMenuState(Menu,2,MF_BYPOSITION) and (MF_GRAYED or MF_DISABLED)=0,'Line right-click must offer vertex creation');
+        CaptureWindow(PopupWindow,'ui_point_menu.png'); EditingStage:=32; ChoosePopupItem(2);
+      end;
+      32: begin
+        var Learned: TWritingGlyph; var Warning: string;
+        Learned:=TWritingGlyph.Create;
+        try
+          Learned.FontID:=EditingFontID; Learned.Character:=EditingCharacter;
+          Learned.Width:=EditingGlyphWidth; Learned.Height:=EditingGlyphHeight;
+          Check(LoadGlyphLearning(Learned,Warning) and (Warning=''),'Native line vertex was not saved');
+          Check(Length(Learned.Strokes[EditingSelectedStroke].PinnedVertices)=1,'Native line action did not create a pinned vertex');
+        finally Learned.Free end;
+        CaptureDialog('ui_vertex_created.png');
+        EditingClick(EditingPoint);
+        Position:=((EditingPoint.X+18) and $FFFF) or (((EditingPoint.Y+14) and $FFFF) shl 16);
+        // 頂点作成後は同じ操作点をドラッグでき、2回のUndoで元の未学習状態へ戻る。
+        SendMessage(EditorSurface,WM_LBUTTONDOWN,MK_LBUTTON,
+          (EditingPoint.X and $FFFF) or ((EditingPoint.Y and $FFFF) shl 16));
+        SendMessage(EditorSurface,WM_MOUSEMOVE,MK_LBUTTON,Position);
+        SendMessage(EditorSurface,WM_LBUTTONUP,0,Position);
+        CaptureDialog('ui_vertex_dragged.png'); SetFocus(EditorSurface); CtrlKey(Ord('Z'));
+        Check(TFile.Exists(EditingFile),'Undo vertex drag removed the created vertex');
+        CtrlKey(Ord('Z')); Check(not TFile.Exists(EditingFile),'Undo creation left vertex learning behind');
+        EditingStage:=33; PostContext(EditorSurface,EditingPoint);
+      end;
+      33: begin
+        OpenPopupHandle; EditingStage:=30; ChoosePopupItem(1);
       end;
       30: begin
         CheckPointDirectionReversed; CaptureDialog('ui_direction_reversed.png');
@@ -875,7 +1192,8 @@ end;
 
 procedure TestNativeStrokeEditing;
 var S: TWritingSettings; Engine: TWritingFontEngine; Glyph: TWritingGlyph;
-  Edit: TEDIT_SECTION; I,Segment: Integer; Folder: string; HadFolder: Boolean;
+  Edit: TEDIT_SECTION; I,J,Segment,First,Last: Integer; Vertices: TArray<Integer>;
+  Folder: string; HadFolder: Boolean; Best: Double;
 begin
   S:=DefaultWritingSettings; S.FontName:='ＭＳ ゴシック'; Engine:=TWritingFontEngine.Create;
   Folder:=''; HadFolder:=True; EditingFile:='';
@@ -900,18 +1218,25 @@ begin
     Check(EditingSelectedStroke>=0,'Native editing test glyph has no splittable path');
     EditingFirst:=Glyph.Strokes[EditingSelectedStroke].Points[0];
     EditingLast:=Glyph.Strokes[EditingSelectedStroke].Points[High(Glyph.Strokes[EditingSelectedStroke].Points)];
-    Segment:=Max(0,(Length(Glyph.Strokes[EditingSelectedStroke].Points)-1) div 3);
+    Vertices:=EditingVertices(Glyph.Strokes[EditingSelectedStroke]); Best:=-1; First:=0; Last:=High(Glyph.Strokes[EditingSelectedStroke].Points);
+    for I:=1 to High(Vertices) do
+    begin
+      var Span: Double; Span:=0;
+      for J:=Vertices[I-1]+1 to Vertices[I] do Span:=Span+Distance(Glyph.Strokes[EditingSelectedStroke].Points[J-1],Glyph.Strokes[EditingSelectedStroke].Points[J]);
+      if Span>Best then begin Best:=Span; First:=Vertices[I-1]; Last:=Vertices[I] end;
+    end;
+    Segment:=Min(Last-1,First+(Last-First) div 3);
     EditingGlyphPoint:=PointF(
       (Glyph.Strokes[EditingSelectedStroke].Points[Segment].X+Glyph.Strokes[EditingSelectedStroke].Points[Segment+1].X)/2,
       (Glyph.Strokes[EditingSelectedStroke].Points[Segment].Y+Glyph.Strokes[EditingSelectedStroke].Points[Segment+1].Y)/2);
     var A,B: TPointF; var Len: Double;
     A:=Glyph.Strokes[EditingSelectedStroke].Points[Segment]; B:=Glyph.Strokes[EditingSelectedStroke].Points[Segment+1];
     Len:=Max(1E-6,Distance(A,B)); EditingNormal:=PointF(-(B.Y-A.Y)/Len,(B.X-A.X)/Len);
-    Segment:=Min(High(Glyph.Strokes[EditingSelectedStroke].Points)-1,Max(1,(Length(Glyph.Strokes[EditingSelectedStroke].Points)-1)*2 div 3));
+    Segment:=Min(Last-1,First+(Last-First)*2 div 3);
     EditingGlyphSecondPoint:=Glyph.Strokes[EditingSelectedStroke].Points[Segment];
     EditingGlyphWidth:=Glyph.Width; EditingGlyphHeight:=Glyph.Height;
     Configure(S); UIValues[0]:=UTF8String(DetailBacking); UIValues[1]:=UTF8String(TextBacking);
-    UIValues[2]:='万年筆'; UIValues[3]:='240'; FillChar(Edit,SizeOf(Edit),0);
+    UIValues[2]:='万年筆'; UIValues[3]:='240'; UIValues[4]:='35'; UIValues[5]:='-100'; UIValues[6]:='-100'; UIValues[7]:='100'; FillChar(Edit,SizeOf(Edit),0);
     Edit.GetObjectItemValue:=UIGet; Edit.SetObjectItemValue:=UISet;
     DialogHandle:=0; PreviewSurface:=0; EditorSurface:=0; EditingStrokeList:=0;
     EditingStage:=0; EditingTicks:=0; EditingError:=''; EditingPoint:=Point(0,0);
@@ -926,6 +1251,100 @@ begin
     if (EditingFile<>'') and TFile.Exists(EditingFile) then TFile.Delete(EditingFile);
     if (Folder<>'') and not HadFolder and TDirectory.Exists(Folder) and (Length(TDirectory.GetFiles(Folder))=0) then
       TDirectory.Delete(Folder,False);
+  end;
+end;
+
+procedure CheckSavedBranch;
+var G: TWritingGlyph; Warning: string;
+begin
+  G:=TWritingGlyph.Create;
+  try
+    G.FontID:=BranchFontID; G.Character:=BranchCharacter; G.Width:=BranchWidth; G.Height:=BranchHeight;
+    Check(LoadGlyphLearning(G,Warning) and (Warning=''),'Native branch result was not saved');
+    CheckAbsorbedBranch(G,PointF(14,7),PointF(30,34));
+  finally G.Free end;
+end;
+
+procedure BranchTick(Wnd: HWND; Msg: UINT; Event: UINT_PTR; Time: DWORD); stdcall;
+var Header: TNMHdr;
+begin
+  Inc(BranchTicks);
+  try
+    if DialogHandle=0 then EnumThreadWindows(GetCurrentThreadId,@FindUIWindow,0);
+    if BranchTicks>30 then raise Exception.Create('Native branch test timed out');
+    if DialogHandle=0 then Exit;
+    case BranchStage of
+      0: begin
+        UIStage:=0; EnumChildWindows(DialogHandle,@FindUIChild,0);
+        SendMessage(PageHandle,TCM_SETCURSEL,1,0);
+        FillChar(Header,SizeOf(Header),0); Header.hwndFrom:=PageHandle; Header.code:=TCN_SELCHANGE;
+        SendMessage(GetParent(PageHandle),WM_NOTIFY,0,LPARAM(@Header)); BranchStage:=1;
+      end;
+      1: begin
+        UIStage:=3; EnumChildWindows(DialogHandle,@FindUIChild,0);
+        Check(SendMessage(EditingStrokeList,LB_GETCOUNT,0,0)=3,'Native branch fixture has the wrong stroke count');
+        SetNativeStrokeSelection([0,2]); CaptureDialog('ui_branch_before.png');
+        BranchStage:=2; PostContext(EditingStrokeList,Point(80,30));
+      end;
+      2: begin
+        OpenPopupHandle; BranchStage:=3; ChoosePopupItem(0);
+      end;
+      3: begin
+        Check(SendMessage(EditingStrokeList,LB_GETCOUNT,0,0)=2,'Existing Join menu did not absorb the branch');
+        CheckSavedBranch; CaptureDialog('ui_branch_absorbed.png');
+        SetFocus(EditingStrokeList); CtrlKey(Ord('Z'));
+        Check(SendMessage(EditingStrokeList,LB_GETCOUNT,0,0)=3,'Undo did not restore the separate branch');
+        Check(THashSHA2.GetHashStringFromFile(BranchFile)=BranchBeforeHash,'Undo changed the original branch learning');
+        CaptureDialog('ui_branch_undo.png'); BranchStage:=4;
+      end;
+      4: begin
+        SetFocus(EditingStrokeList); CtrlKey(Ord('Y'));
+        Check(SendMessage(EditingStrokeList,LB_GETCOUNT,0,0)=2,'Redo did not absorb the branch');
+        CheckSavedBranch; CaptureDialog('ui_branch_redone.png');
+        KillTimer(0,BranchTimer); BranchTimer:=0; BranchStage:=5; PostMessage(DialogHandle,WM_CLOSE,0,0);
+      end;
+    end;
+  except on E: Exception do
+  begin
+    BranchError:=Format('stage %d: %s',[BranchStage,E.Message]); EndMenu;
+    KillTimer(0,BranchTimer); BranchTimer:=0; if DialogHandle<>0 then PostMessage(DialogHandle,WM_CLOSE,0,0);
+  end end;
+end;
+
+procedure TestNativeBranchJoin;
+var S: TWritingSettings; Engine: TWritingFontEngine; Source,G: TWritingGlyph;
+  Folder: string; HadFolder: Boolean; I: Integer; Edit: TEDIT_SECTION;
+begin
+  Engine:=TWritingFontEngine.Create; G:=TWritingGlyph.Create; Folder:=''; HadFolder:=True; BranchFile:='';
+  try
+    S:=DefaultWritingSettings; S.FontName:='ＭＳ ゴシック'; Engine.Configure(S);
+    Folder:=TPath.Combine(TPath.Combine(LearningDirectory,'Fonts'),Engine.FontID); HadFolder:=TDirectory.Exists(Folder);
+    for I:=$E200 to $E2FF do
+    begin
+      BranchFile:=TPath.Combine(Folder,IntToHex(I,4)+'.json');
+      if not TFile.Exists(BranchFile) then begin S.Text:=Char(I); Break end;
+      BranchFile:='';
+    end;
+    Check(BranchFile<>'','No unused branch test character'); Source:=Engine.Glyph(S.Text);
+    G.FontID:=Engine.FontID; G.FontFace:=Source.FontFace; G.Character:=S.Text;
+    G.Width:=Source.Width; G.Height:=Source.Height; G.Mask:=Copy(Source.Mask);
+    MakeBranchFixture(G,True); SaveGlyphLearning(G); BranchBeforeHash:=THashSHA2.GetHashStringFromFile(BranchFile);
+    BranchFontID:=G.FontID; BranchCharacter:=G.Character; BranchWidth:=G.Width; BranchHeight:=G.Height;
+    Configure(S); UIValues[0]:=UTF8String(DetailBacking); UIValues[1]:=UTF8String(TextBacking);
+    UIValues[2]:='万年筆'; UIValues[3]:='240'; UIValues[4]:='35'; UIValues[5]:='-100'; UIValues[6]:='-100'; UIValues[7]:='100'; FillChar(Edit,SizeOf(Edit),0);
+    Edit.GetObjectItemValue:=UIGet; Edit.SetObjectItemValue:=UISet;
+    DialogHandle:=0; PageHandle:=0; EditorSurface:=0; EditingStrokeList:=0;
+    BranchStage:=0; BranchTicks:=0; BranchError:=''; BranchTimer:=SetTimer(0,0,250,@BranchTick);
+    Check(BranchTimer<>0,'Cannot start native branch timer');
+    try Button^.Callback2(@Edit,Pointer(1234),'自動筆記:2','設定')
+    finally if BranchTimer<>0 then KillTimer(0,BranchTimer) end;
+    Check(BranchError='','Native branch join failure: '+BranchError);
+    Check(BranchStage=5,'Native branch join did not finish');
+    Writeln('PASS existing native Join menu absorbs a branch, saves, undoes and redoes');
+  finally
+    G.Free; Engine.Free;
+    if (BranchFile<>'') and TFile.Exists(BranchFile) then TFile.Delete(BranchFile);
+    if (Folder<>'') and not HadFolder and TDirectory.Exists(Folder) and (Length(TDirectory.GetFiles(Folder))=0) then TDirectory.Delete(Folder,False);
   end;
 end;
 
@@ -987,19 +1406,20 @@ begin
 end;
 
 var Module: HMODULE; GetTable: TGetTable; Init: TInitialize; Required: TRequired;
-  Uninit: TUninitialize; Session: Pointer;
+  Uninit: TUninitialize; Session: Pointer; PenTests: TPenTestContext;
 begin
   Module:=0; Renderer:=nil; Session:=nil;
   try
     if ParamCount<2 then raise Exception.Create('Usage: AutoWriting_Tests.exe plugin.auf2 output-directory');
     OutputDirectory:=ExpandFileName(ParamStr(2)); ForceDirectories(OutputDirectory);
     if not ((ParamCount>=3) and ((ParamStr(3)='--glyph-samples') or (ParamStr(3)='--demo-only'))) then
-    begin TestSettingsAndLearning; TestStrokeEditing; TestOverlappingReveal; TestSelectedStrokeOperations; TestFontCacheAndLayout end;
+    begin TestSettingsAndLearning; TestStrokeEditing; TestEditingVertices; TestOverlappingReveal; TestSelectedStrokeOperations; TestBranchAbsorption; TestFontCacheAndLayout end;
     Module:=LoadLibrary(PChar(ExpandFileName(ParamStr(1))));
     Check(Module<>0,'Cannot load production AUF2: '+SysErrorMessage(GetLastError));
     @GetTable:=GetProcAddress(Module,'GetFilterPluginTable'); @Init:=GetProcAddress(Module,'InitializePlugin');
     @Required:=GetProcAddress(Module,'RequiredVersion'); @Uninit:=GetProcAddress(Module,'UninitializePlugin');
     Check(Assigned(GetTable) and Assigned(Init) and Assigned(Required) and Assigned(Uninit),'Missing exports');
+    Check(GetProcAddress(Module,'ReadWritingRenderProfile')=nil,'Normal build must not expose profiling controls');
     Check(Required=2011600,'Minimum SDK version'); Check(Init(2011500)=0,'Old host accepted'); Check(Init(2011600)=1,'Supported host rejected');
     Table:=GetTable; Check(Table<>nil,'No table'); Check(string(Table^.Name)='自動筆記','Plugin name');
     Check(string(Table^.Information)='自動筆記 / SYNC_AutoWriting v'+AW_VERSION,'Plugin display version differs from the source version');
@@ -1008,9 +1428,13 @@ begin
     FillChar(Video,SizeOf(Video),0); FillChar(Obj,SizeOf(Obj),0); FillChar(Scene,SizeOf(Scene),0);
     Scene.Rate:=30; Scene.Scale:=1; Video.Scene:=@Scene; Video.Object_:=@Obj;
     Video.GetImageData:=GetImage; Video.SetImageData:=SetImage; Video.UserData:=Session;
+    PenTests.Check:=Check; PenTests.Configure:=Configure; PenTests.Render:=Render; PenTests.SizeFrame:=SizeFrame;
+    PenTests.SavePNG:=SavePNG; PenTests.Renderer:=Renderer; PenTests.PenSizeTrack:=Tracks[8];
+    PenTests.DetailsItem:=DetailsItem;
+    PenTests.PenItem:=PenItem;
     if (ParamCount>=3) and (ParamStr(3)='--glyph-samples') then RenderGlyphSamples
     else if (ParamCount>=3) and (ParamStr(3)='--demo-only') then RenderDemo
-    else begin TestFinalFont; TestProduction; TestSettingsDialog; TestNativeStrokeEditing end;
+    else begin TestFinalFont; TestPenRendering(PenTests); TestProduction; TestSettingsDialog; TestNativeStrokeEditing; TestNativeBranchJoin end;
     if (ParamCount>=3) and (ParamStr(3)='--demo') then begin Video.UserData:=Session; RenderDemo end;
     Writeln('ALL PASS: ',Tests,' checks');
   except on E: Exception do begin Writeln('FAIL ',E.ClassName,': ',E.Message); ExitCode:=1 end end;

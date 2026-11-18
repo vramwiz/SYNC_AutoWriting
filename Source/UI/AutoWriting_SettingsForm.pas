@@ -17,8 +17,8 @@ implementation
 uses Winapi.Windows, Winapi.Messages, System.SysUtils, System.Classes, System.Types, System.Math, System.UITypes,
   System.Generics.Collections,
   Vcl.Forms, Vcl.Controls, Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.ComCtrls,
-  Vcl.Graphics, Vcl.Dialogs, Vcl.Samples.Spin, Vcl.Menus, Vcl.ImgList, AutoWriting_Fonts,
-  AutoWriting_Renderer, AutoWriting_Inference, AutoWriting_Learning, AutoWriting_Editing;
+  Vcl.Graphics, Vcl.Dialogs, Vcl.Samples.Spin, Vcl.Menus, Vcl.ImgList, Vcl.NumberBox, AutoWriting_Fonts,
+  AutoWriting_Renderer, AutoWriting_Inference, AutoWriting_Learning, AutoWriting_Editing, AutoWriting_Vertices;
 
 type
   TWritingStrokeListBox = class(TListBox)
@@ -64,14 +64,16 @@ type
     FFontButton,FColorButton: TButton;
     FPen,FDirection: TComboBox;
     FShowPen: TCheckBox;
-    FSize,FSpeed,FLetter,FLine,FPenSize,FAngle,FLift: TSpinEdit;
+    FSize,FSpeed,FLetter,FLine,FAngle,FLift,FLightX,FLightY: TSpinEdit;
+    FPenSize: TNumberBox;
     FRatios: array[TCharacterKind] of TSpinEdit;
     FChars: TListBox;
     FStrokes: TWritingStrokeListBox;
     FStatus,FTimeLabel,FEditorStatus: TLabel;
     FTimer: TTimer;
     FStart,FPausedAt,FChangedAt,FSingleStart: UInt64;
-    FPaused,FUpdating,FDirty,FSinglePlaying,FSpeedChanged,FPathChanged: Boolean;
+    FPaused,FUpdating,FDirty,FSinglePlaying,FSpeedChanged,FAngleChanged,FPathChanged: Boolean;
+    FLightXChanged,FLightYChanged,FPenSizeChanged: Boolean;
     FDragPoint,FSelectedPoint: Integer;
     FDragIndices: TArray<Integer>;
     FViewScale,FViewX,FViewY: Double;
@@ -81,6 +83,7 @@ type
     FPointIcons: TImageList;
     FPointHits: TArray<TStrokeHit>;
     FPointIndices: TArray<Integer>;
+    FVertices: TArray<TArray<Integer>>;
     FDragOrigin: TPoint;
     FDragBefore: TGlyphEditState;
     FUndo,FRedo: TList<TGlyphEditState>;
@@ -139,7 +142,7 @@ const
   KIND_NAMES: array[TCharacterKind] of string = ('漢字','ひらがな','カタカナ','数字','英字','記号');
   STROKE_COLORS: array[0..9] of TColor = ($4848D6,$CE8742,$74A153,$B667B1,$C2B13C,$6796E2,$C3765C,$9B69CB,$419CA2,$82954C);
   EA_SPLIT=1; EA_JOIN=2; EA_REVERSE=3; EA_UP=4; EA_DOWN=5;
-  EA_UNDO=6; EA_REDO=7; EA_RESET=8; EA_PLAY=9; EA_SELECTALL=10; EA_REVERSEPOINT=11;
+  EA_UNDO=6; EA_REDO=7; EA_RESET=8; EA_PLAY=9; EA_SELECTALL=10; EA_REVERSEPOINT=11; EA_VERTEX=12;
 
 constructor TWritingStrokeListBox.Create(AOwner: TComponent);
 begin inherited; FDropIndex:=-1 end;
@@ -237,9 +240,10 @@ begin
     end;
   finally Bitmap.Free end;
   FEditorMenu:=TPopupMenu.Create(Self); FEditorMenu.Images:=FPointIcons;
-  AddAction(FEditorMenu,'選択した点で分割',EA_SPLIT,Ord('K'),[ssCtrl]);
+  AddAction(FEditorMenu,'ここで分割',EA_SPLIT,Ord('K'),[ssCtrl]);
   AddAction(FEditorMenu,'この画の描画方向を反転',EA_REVERSEPOINT,Ord('R'),[ssCtrl]);
-  FChoosePointItem:=AddAction(FEditorMenu,'重なる点を選び直す',0,0,[]);
+  AddAction(FEditorMenu,'頂点を作成',EA_VERTEX,Ord('I'),[ssCtrl]);
+  FChoosePointItem:=AddAction(FEditorMenu,'重なる点・線を選び直す',0,0,[]);
   AddAction(FEditorMenu,'-',0,0,[]); CommonActions(FEditorMenu);
   FStrokeMenu:=TPopupMenu.Create(Self); CommonActions(FStrokeMenu);
   FPointMenu:=TPopupMenu.Create(Self); FPointMenu.Images:=FPointIcons;
@@ -267,39 +271,34 @@ begin
 end;
 
 procedure TWritingSettingsForm.GatherPointChoices(X,Y: Integer);
-var I,J,BestIndex,N: Integer; D,Best: Double; P: TPointF; H: TStrokeHit;
-  procedure FlushRun;
-  begin
-    if BestIndex<0 then Exit;
-    H:=Default(TStrokeHit); H.Stroke:=I; H.Point:=FCurrent.Strokes[I].Points[BestIndex];
-    H.Segment:=Max(0,BestIndex-1); H.T:=1; if BestIndex=0 then H.T:=0;
-    N:=Length(FPointHits); SetLength(FPointHits,N+1); SetLength(FPointIndices,N+1);
-    FPointHits[N]:=H; FPointIndices[N]:=BestIndex; Best:=12; BestIndex:=-1;
-  end;
 begin
   FPointHits:=nil; FPointIndices:=nil; if (FCurrent=nil) or (FViewScale<=0) then Exit;
-  for I:=0 to High(FCurrent.Strokes) do
-  begin
-    Best:=12; BestIndex:=-1;
-    for J:=0 to High(FCurrent.Strokes[I].Points) do
-    begin
-      P:=FCurrent.Strokes[I].Points[J]; D:=Hypot(FViewX+P.X*FViewScale-X,FViewY+P.Y*FViewScale-Y);
-      if D<=12 then
-      begin if D<Best then begin Best:=D; BestIndex:=J end end
-      else FlushRun;
-    end;
-    // 同じ画が交差点へ戻る場合も、離れた点番号の候補は別々に残す。
-    FlushRun;
-  end;
+  FPointHits:=HitEditingPaths(FCurrent,PointF((X-FViewX)/FViewScale,(Y-FViewY)/FViewScale),
+    12/FViewScale,14/FViewScale,FPointIndices);
 end;
-
 procedure TWritingSettingsForm.PopulatePointChoices(ParentItem: TMenuItem);
-var I: Integer; Item: TMenuItem;
+var I,J,Number: Integer; Item: TMenuItem; Progress: Double;
 begin
   ParentItem.Clear;
   for I:=0 to High(FPointHits) do
   begin
-    Item:=TMenuItem.Create(Self); Item.Caption:=Format('%d画目・点%d',[FPointHits[I].Stroke+1,FPointIndices[I]+1]);
+    Item:=TMenuItem.Create(Self);
+    if FPointIndices[I]>=0 then
+    begin
+      Number:=1;
+      for J:=0 to High(FVertices[FPointHits[I].Stroke]) do
+        if FVertices[FPointHits[I].Stroke][J]=FPointIndices[I] then begin Number:=J+1; Break end;
+      Item.Caption:=Format('%d画目・頂点%d',[FPointHits[I].Stroke+1,Number]);
+    end
+    else begin
+      Progress:=0;
+      with FCurrent.Strokes[FPointHits[I].Stroke] do
+      begin
+        for J:=1 to FPointHits[I].Segment do Progress:=Progress+Distance(Points[J-1],Points[J]);
+        Progress:=(Progress+Distance(Points[FPointHits[I].Segment],FPointHits[I].Point))/Max(1,Length);
+      end;
+      Item.Caption:=Format('%d画目・線上（%d%%）',[FPointHits[I].Stroke+1,EnsureRange(Round(Progress*100),0,100)]);
+    end;
     Item.Tag:=I; Item.ImageIndex:=FPointHits[I].Stroke mod Length(STROKE_COLORS);
     Item.OnClick:=PointChoice; ParentItem.Add(Item);
   end;
@@ -313,17 +312,21 @@ begin
 end;
 
 procedure TWritingSettingsForm.PathContext(Sender: TObject; MousePos: TPoint; var Handled: Boolean);
-var P: TPoint;
+var P: TPoint; I,Choice: Integer;
 begin
   Handled:=True; FSinglePlaying:=False; FDragPoint:=-1; FEditPaint.MouseCapture:=False;
   FEditPaint.SetFocus;
   if (MousePos.X<0) and (FSelectedHit.Stroke>=0) then
     MousePos:=Point(Round(FViewX+FSelectedHit.Point.X*FViewScale),Round(FViewY+FSelectedHit.Point.Y*FViewScale));
   if MousePos.X<0 then MousePos:=Point(20,20);
-  if FSelectedHit.Stroke<0 then
+  if (FSelectedHit.Stroke<0) or
+    (Hypot(FViewX+FSelectedHit.Point.X*FViewScale-MousePos.X,FViewY+FSelectedHit.Point.Y*FViewScale-MousePos.Y)>10) then
   begin
     GatherPointChoices(MousePos.X,MousePos.Y);
-    if Length(FPointHits)=1 then SelectPathPoint(FPointHits[0],FPointIndices[0]);
+    Choice:=-1; if Length(FPointHits)=1 then Choice:=0;
+    for I:=0 to High(FPointHits) do if FPointHits[I].Stroke=FStrokes.ItemIndex then begin Choice:=I; Break end;
+    if Choice>=0 then SelectPathPoint(FPointHits[Choice],FPointIndices[Choice])
+    else begin FSelectedHit.Stroke:=-1; FSelectedPoint:=-1; UpdateEditorStatus; FEditPaint.Invalidate end;
   end;
   if FSelectedHit.Stroke>=0 then
     GatherPointChoices(Round(FViewX+FSelectedHit.Point.X*FViewScale),Round(FViewY+FSelectedHit.Point.Y*FViewScale))
@@ -356,6 +359,7 @@ begin
     EA_JOIN: Result:=FStrokes.SelCount>=2;
     EA_REVERSE,EA_UP,EA_DOWN: Result:=FStrokes.SelCount>0;
     EA_REVERSEPOINT: Result:=(FSelectedHit.Stroke>=0) and (FSelectedHit.Stroke<Length(FCurrent.Strokes));
+    EA_VERTEX: Result:=(FSelectedHit.Stroke>=0) and (FSelectedPoint<0);
     EA_UNDO: Result:=FUndo.Count>0;
     EA_REDO: Result:=FRedo.Count>0;
     EA_RESET,EA_PLAY,EA_SELECTALL: Result:=True;
@@ -387,6 +391,12 @@ begin
   KeepHit:=FSelectedHit; KeepPoint:=FSelectedPoint;
   Before:=CaptureGlyphState(FCurrent); FSinglePlaying:=False;
   case Action of
+    EA_VERTEX: begin
+      if not CreateStrokeVertex(FCurrent,FSelectedHit,KeepPoint) then Exit;
+      KeepHit:=FSelectedHit; KeepHit.Point:=FCurrent.Strokes[KeepHit.Stroke].Points[KeepPoint];
+      KeepHit.Segment:=Max(0,KeepPoint-1); KeepHit.T:=1; if KeepPoint=0 then KeepHit.T:=0;
+      After:=[KeepHit.Stroke];
+    end;
     EA_SPLIT: begin
       Index:=FSelectedHit.Stroke;
       if not SplitStrokeAt(FCurrent,FSelectedHit) then Exit;
@@ -417,12 +427,12 @@ begin
     else Exit;
   end;
   CommitEdit(Before); SetStrokeSelection(After); UpdateEditorStatus; FEditPaint.Invalidate;
-  if (Action=EA_REVERSE) and (KeepHit.Stroke>=0) then SelectPathPoint(KeepHit,KeepPoint);
+  if (Action in [EA_REVERSE,EA_VERTEX]) and (KeepHit.Stroke>=0) then SelectPathPoint(KeepHit,KeepPoint);
 end;
 
 constructor TWritingSettingsForm.CreateForSettings(const S: TWritingSettings);
 var Bottom,LeftPanel,RightPanel,HelpPanel: TPanel; Scroll: TScrollBox;
-  L: TLabel; B: TButton; K: TCharacterKind; Y: Integer;
+  L: TLabel; B: TButton; K: TCharacterKind; P: TPenKind; Y: Integer;
 begin
   inherited CreateNew(nil); FSettings:=S; FUpdating:=True;
   Caption:='自動筆記 — SYNC_AutoWriting v'+AW_VERSION;
@@ -448,26 +458,36 @@ begin
   FMemo.ScrollBars:=ssVertical; FMemo.MaxLength:=AW_MAX_TEXT; FMemo.Text:=S.Text; FMemo.OnChange:=Changed;
   FFontButton:=AddButton(Scroll,S.FontName,12,162,304,PickFont);
   FSize:=AddSpin(Scroll,'基準文字サイズ',202,Round(S.FontSize),12,256);
-  FSpeed:=AddSpin(Scroll,'ペン速度（px / 秒）',236,Round(S.Speed),1,10000);
-  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,275,150,22); L.Caption:='筆記具';
-  FPen:=TComboBox.Create(Self); FPen.Parent:=Scroll; FPen.SetBounds(142,272,174,27); FPen.Style:=csDropDownList;
-  FPen.Items.AddStrings(['鉛筆','ボールペン','万年筆','毛筆']); FPen.ItemIndex:=Ord(S.Pen); FPen.OnChange:=Changed;
-  FShowPen:=TCheckBox.Create(Self); FShowPen.Parent:=Scroll; FShowPen.SetBounds(12,307,300,25);
+  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,241,204,22); L.Caption:='ペンサイズ（%）';
+  FPenSize:=TNumberBox.Create(Self); FPenSize.Parent:=Scroll; FPenSize.SetBounds(216,236,100,27);
+  FPenSize.Mode:=nbmFloat; FPenSize.Decimal:=2; FPenSize.MinValue:=30; FPenSize.MaxValue:=300;
+  FPenSize.SmallStep:=0.01; FPenSize.LargeStep:=1; FPenSize.Value:=S.PenSize*100; FPenSize.OnChangeValue:=Changed;
+  FPenSize.ShowHint:=True; FPenSize.Hint:='100で標準、0.01刻み。AviUtl2側の「ペンサイズ」と共通です。';
+  FSpeed:=AddSpin(Scroll,'ペン速度（px / 秒）',270,Round(S.Speed),1,10000);
+  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,309,150,22); L.Caption:='筆記具';
+  FPen:=TComboBox.Create(Self); FPen.Parent:=Scroll; FPen.SetBounds(142,306,174,27); FPen.Style:=csDropDownList; FPen.Sorted:=False;
+  for P in AW_PEN_ORDER do FPen.Items.Add(string(AW_PEN_NAMES[P]));
+  FPen.ItemIndex:=PenChoiceIndex(S.Pen); FPen.OnChange:=Changed;
+  FShowPen:=TCheckBox.Create(Self); FShowPen.Parent:=Scroll; FShowPen.SetBounds(12,341,300,25);
   FShowPen.Caption:='ペン・筆を表示'; FShowPen.Checked:=S.ShowPen; FShowPen.OnClick:=Changed;
-  FColorButton:=AddButton(Scroll,'文字色を選択',12,339,304,PickColor);
-  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,383,130,22); L.Caption:='文字の向き';
-  FDirection:=TComboBox.Create(Self); FDirection.Parent:=Scroll; FDirection.SetBounds(142,378,174,27);
+  FColorButton:=AddButton(Scroll,'文字色を選択',12,373,304,PickColor);
+  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,417,130,22); L.Caption:='文字の向き';
+  FDirection:=TComboBox.Create(Self); FDirection.Parent:=Scroll; FDirection.SetBounds(142,412,174,27);
   FDirection.Style:=csDropDownList; FDirection.Items.AddStrings(['横書き','縦書き']); FDirection.ItemIndex:=Ord(S.Vertical); FDirection.OnChange:=Changed;
-  FLetter:=AddSpin(Scroll,'字間（基準サイズの %）',417,Round(S.LetterGap*100),-50,300);
-  FLine:=AddSpin(Scroll,'行の追加間隔（%）',451,Round(S.LineGap*100),0,400);
-  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,492,300,22); L.Caption:='文字種別のサイズ比率';
-  Y:=522;
+  FLetter:=AddSpin(Scroll,'字間（基準サイズの %）',451,Round(S.LetterGap*100),-50,300);
+  FLine:=AddSpin(Scroll,'行の追加間隔（%）',485,Round(S.LineGap*100),0,400);
+  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,526,300,22); L.Caption:='文字種別のサイズ比率';
+  Y:=556;
   for K:=Low(K) to High(K) do
   begin FRatios[K]:=AddSpin(Scroll,KIND_NAMES[K]+'（%）',Y,Round(S.Ratios[K]*100),30,200); Inc(Y,34) end;
-  FPenSize:=AddSpin(Scroll,'筆記具の表示サイズ（%）',Y+12,Round(S.PenSize*100),30,300);
-  FAngle:=AddSpin(Scroll,'筆記具の傾き（度）',Y+46,Round(S.PenAngle),-180,180);
-  FLift:=AddSpin(Scroll,'ペンを上げる高さ',Y+80,Round(S.LiftHeight),0,80);
-  L:=TLabel.Create(Self); L.Parent:=Scroll; L.AutoSize:=False; L.SetBounds(12,Y+118,304,80); L.WordWrap:=True;
+  FAngle:=AddSpin(Scroll,'ペン角度（0°＝上）',Y+12,Round(S.PenAngle),-180,180);
+  FAngle.ShowHint:=True; FAngle.Hint:='正の値で右、負の値で左へ傾きます。AviUtl2側の「ペン角度」と共通です。';
+  FLift:=AddSpin(Scroll,'ペンを上げる高さ',Y+46,Round(S.LiftHeight),0,80);
+  FLightX:=AddSpin(Scroll,'光源X（左− / 右＋）',Y+80,Round(S.LightX),-400,400);
+  FLightY:=AddSpin(Scroll,'光源Y（上− / 下＋）',Y+114,Round(S.LightY),-400,400);
+  FLightX.ShowHint:=True; FLightX.Hint:='ペン先を基準にした光源方向。左から照らすと影が右へ伸びます。AviUtl2側と共通です。';
+  FLightY.ShowHint:=True; FLightY.Hint:='ペン先を基準にした光源方向。上から照らすと影が下へ伸びます。AviUtl2側と共通です。';
+  L:=TLabel.Create(Self); L.Parent:=Scroll; L.AutoSize:=False; L.SetBounds(12,Y+152,304,80); L.WordWrap:=True;
   L.Caption:='インストール済みのフォントを使用します。文字形状は保持し、書き順だけを推定・学習します。筆圧や高度な縦組みは今後調整します。';
   HelpPanel:=TPanel.Create(Self); HelpPanel.Parent:=FPreviewPage; HelpPanel.Align:=alBottom; HelpPanel.Height:=50; HelpPanel.BevelOuter:=bvNone;
   FTimeLabel:=TLabel.Create(Self); FTimeLabel.Parent:=HelpPanel; FTimeLabel.AutoSize:=False;
@@ -509,17 +529,25 @@ var K: TCharacterKind;
 begin
   FSettings.Text:=Copy(FMemo.Text,1,AW_MAX_TEXT); FSettings.FontSize:=FSize.Value;
   if FSpeedChanged then FSettings.Speed:=FSpeed.Value;
-  FSettings.Pen:=TPenKind(Max(0,FPen.ItemIndex));
+  FSettings.Pen:=AW_PEN_ORDER[EnsureRange(FPen.ItemIndex,Low(AW_PEN_ORDER),High(AW_PEN_ORDER))];
   FSettings.Vertical:=FDirection.ItemIndex=1; FSettings.ShowPen:=FShowPen.Checked;
   FSettings.LetterGap:=FLetter.Value/100; FSettings.LineGap:=FLine.Value/100;
   for K:=Low(K) to High(K) do FSettings.Ratios[K]:=FRatios[K].Value/100;
-  FSettings.PenSize:=FPenSize.Value/100; FSettings.PenAngle:=FAngle.Value; FSettings.LiftHeight:=FLift.Value;
+  if FPenSizeChanged then FSettings.PenSize:=FPenSize.ValueFloat/100;
+  FSettings.LiftHeight:=FLift.Value;
+  if FAngleChanged then FSettings.PenAngle:=FAngle.Value;
+  if FLightXChanged then FSettings.LightX:=FLightX.Value;
+  if FLightYChanged then FSettings.LightY:=FLightY.Value;
 end;
 
 procedure TWritingSettingsForm.Changed(Sender: TObject);
 begin
   if FUpdating then Exit;
   if Sender=FSpeed then FSpeedChanged:=True;
+  if Sender=FAngle then FAngleChanged:=True;
+  if Sender=FLightX then FLightXChanged:=True;
+  if Sender=FLightY then FLightYChanged:=True;
+  if Sender=FPenSize then FPenSizeChanged:=True;
   FDirty:=True; FChangedAt:=GetTickCount64;
 end;
 
@@ -633,6 +661,7 @@ begin
     if ssCtrl in Shift then
       case Key of
         Ord('K'): Action:=EA_SPLIT; Ord('J'): Action:=EA_JOIN;
+        Ord('I'): Action:=EA_VERTEX;
         Ord('R'): if ssShift in Shift then Action:=EA_RESET else Action:=EA_REVERSE;
         Ord('Z'): Action:=EA_UNDO; Ord('Y'): Action:=EA_REDO; Ord('A'): Action:=EA_SELECTALL;
       end
@@ -676,6 +705,12 @@ begin
   Selected:=FStrokes.ItemIndex; Indices:=SelectedStrokes; FStrokes.Items.BeginUpdate;
   try
     FStrokes.Clear;
+    FVertices:=nil;
+    if FCurrent<>nil then
+    begin
+      SetLength(FVertices,Length(FCurrent.Strokes));
+      for I:=0 to High(FVertices) do FVertices[I]:=EditingVertices(FCurrent.Strokes[I]);
+    end;
     if FCurrent<>nil then for I:=0 to High(FCurrent.Strokes) do FStrokes.Items.Add(IntToStr(I+1));
     SetStrokeSelection(Indices);
     if (FStrokes.Count>0) and (FStrokes.SelCount=0) then SetStrokeSelection([EnsureRange(Selected,0,FStrokes.Count-1)]);
@@ -698,8 +733,8 @@ begin
   if FCurrent=nil then begin FEditorStatus.Caption:='文字を選択してください。'; Exit end;
   State:='自動推定'; if FCurrent.Learned then State:='学習済み';
   Text:=FCurrent.Character+' — '+State+' / '+IntToStr(Length(FCurrent.Strokes))+' 画。';
-  if FSelectedHit.Stroke>=0 then Text:=Text+Format(' 選択点: %d画目。右クリック→分割（Ctrl+K）。',[FSelectedHit.Stroke+1])
-  else Text:=Text+' 点を選択→右クリックで分割。重なる点は色付き候補から選択。';
+  if FSelectedHit.Stroke>=0 then Text:=Text+Format(' 選択位置: %d画目。右クリック→頂点作成／分割。',[FSelectedHit.Stroke+1])
+  else Text:=Text+' 線を右クリック→頂点作成／分割。重なりは色付き候補から選択。';
   Text:=Text+Format(' 選択中: %d画。太線＝選択、●始点 → □終点。',[FStrokes.SelCount]);
   Text:=Text+' 画一覧はCtrl/Shiftで複数選択→右クリックで結合。';
   FEditorStatus.Caption:=Text; FEditorStatus.Hint:=Text;
@@ -804,15 +839,14 @@ var C: TCanvas; I,X,Y: Integer; R: TRect; S: TWritingSettings;
     end;
   end;
   procedure Handles(Index: Integer; Active: Boolean);
-  var J,X,Y,Radius: Integer; P,Last: TPointF;
+  var J,X,Y,Radius: Integer; P: TPointF;
   begin
-    Last:=PointF(-1E9,-1E9); Radius:=3; if Active then Radius:=4;
+    Radius:=3; if Active then Radius:=4;
     C.Brush.Style:=bsSolid; C.Brush.Color:=PathColor(Index,Active); C.Pen.Color:=clWhite; C.Pen.Width:=1;
-    for J:=0 to High(FCurrent.Strokes[Index].Points) do
+    for J in FVertices[Index] do
     begin
       P:=ScreenPoint(FCurrent.Strokes[Index].Points[J]);
-      if (Distance(Last,P)<26) and (J<>High(FCurrent.Strokes[Index].Points)) then Continue;
-      X:=Round(P.X); Y:=Round(P.Y); C.Ellipse(X-Radius,Y-Radius,X+Radius+1,Y+Radius+1); Last:=P;
+      X:=Round(P.X); Y:=Round(P.Y); C.Ellipse(X-Radius,Y-Radius,X+Radius+1,Y+Radius+1);
     end;
   end;
   procedure LabelAt(const P: TPointF; const Text: string; Color: TColor);
@@ -927,7 +961,8 @@ begin
     C.Brush.Color:=STROKE_COLORS[FSelectedHit.Stroke mod 10]; C.Ellipse(X-12,Y-12,X+13,Y+13);
     C.Pen.Color:=clBlack; C.Pen.Width:=2; C.Brush.Style:=bsClear; C.Ellipse(X-12,Y-12,X+13,Y+13);
     C.Font.Size:=11; C.Font.Color:=clBlack;
-    C.TextOut(X+16,Y-19,Format('%d画目',[FSelectedHit.Stroke+1]));
+    if FSelectedPoint<0 then C.TextOut(X+16,Y-19,Format('%d画目・線上',[FSelectedHit.Stroke+1]))
+    else C.TextOut(X+16,Y-19,Format('%d画目・頂点',[FSelectedHit.Stroke+1]));
   end;
 end;
 
@@ -965,15 +1000,21 @@ begin
 end;
 
 procedure TWritingSettingsForm.PathMouseMove(Sender: TObject; Shift: TShiftState; X,Y: Integer);
-var I: Integer; Original: TPointF;
+var I,J: Integer; Original,Target: TPointF;
 begin
   if (FCurrent=nil) or FSinglePlaying or (FViewScale<=0) then Exit;
   if FDragPoint<0 then Exit; I:=FSelectedHit.Stroke; if I<0 then Exit;
   if not FPathChanged and (Hypot(X-FDragOrigin.X,Y-FDragOrigin.Y)<4) then Exit;
   Original:=FDragBefore.Strokes[I].Points[FDragPoint];
-  FCurrent.Strokes[I].Points[FDragPoint]:=PointF(
+  Target:=PointF(
     EnsureRange(Original.X+(X-FDragOrigin.X)/FViewScale,0.0,Max(0,FCurrent.Width-1)*1.0),
     EnsureRange(Original.Y+(Y-FDragOrigin.Y)/FViewScale,0.0,Max(0,FCurrent.Height-1)*1.0));
+  if not MovePathVertex(FDragBefore.Strokes[I],FDragPoint,Target,FCurrent.Strokes[I]) then Exit;
+  for J:=0 to High(FCurrent.Strokes[I].Points) do
+  begin
+    FCurrent.Strokes[I].Points[J].X:=EnsureRange(FCurrent.Strokes[I].Points[J].X,0.0,Max(0,FCurrent.Width-1)*1.0);
+    FCurrent.Strokes[I].Points[J].Y:=EnsureRange(FCurrent.Strokes[I].Points[J].Y,0.0,Max(0,FCurrent.Height-1)*1.0);
+  end;
   FPathChanged:=True;
   FSelectedHit.Point:=FCurrent.Strokes[I].Points[FDragPoint];
   FEditPaint.Invalidate;
