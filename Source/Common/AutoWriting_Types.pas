@@ -12,7 +12,7 @@ const
   AW_EM = 128;
   AW_MAX_TEXT = 4096;
   AW_MAX_PIXELS = 16777216;
-  AW_VERSION = '0.1.5';
+  AW_VERSION = '1.0.0';
 
 type
   TPenKind = (pkPencil, pkBallpoint, pkFountain, pkBrush);

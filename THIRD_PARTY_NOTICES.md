@@ -18,7 +18,7 @@
 - **Syncroh2 / SYNC_Lyrics**: `PluginFilterTable.pas` の登録処理の由来。
 - **Aul2AudioFilter**: 編集APIで標準項目へ反映する方式の由来。
 
-setupはユーザー指示によりWeatherFXのファイルをバイト単位でそのままコピーしたものです。AutoWritingの正式配布物ではありません。
+setupの配布処理はWeatherFXを参照して継承し、SYNC_AutoWriting用に製品名・パス・カタログとバージョン検証を変更しています。
 
 文字中心線の細線化にはZhang-Suenの2段階削除条件を独自実装しています。外部実装のソースコード・学習モデル・筆順辞書は同梱していません。
 

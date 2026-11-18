@@ -3,11 +3,12 @@
     [string]$XxhsumPath
 )
 
-# SYNC_AquaFX/setupを継承。既存のWeatherFX本番AUF2を梱包し、末尾バージョンのハッシュを更新する。
+# SYNC_AutoWritingの既存Release AUF2と説明書・ライセンスをZIPへ梱包する。
+# 入力AUF2は読取専用。出力ZIPとカタログJSONのXXH3_128だけを原子的に更新する。
 # ビルド・ホスト起動・ネットワークへの公開は行わない。
 # Copyright (c) 2026 VRAMの魔術師 / SPDX-License-Identifier: GPL-3.0-only
 $ErrorActionPreference = 'Stop'
-$packageName = 'SYNC_WeatherFX'
+$packageName = 'SYNC_AutoWriting'
 $projectDir = Split-Path -Parent $PSScriptRoot
 if (-not $ReleaseDirectory) { $ReleaseDirectory = Join-Path $env:ProgramData "aviutl2\Plugin\$packageName" }
 $pluginName = "$packageName.auf2"
@@ -37,7 +38,7 @@ $tempReadme = "$tempBase-readme.tmp"
 $catalogBackup = "$tempBase-previous-catalog.tmp"
 
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
-$lock = [Threading.Mutex]::new($false, 'Local\VRAMWIZ.SYNC_WeatherFX.ReleaseZip')
+$lock = [Threading.Mutex]::new($false, "Local\VRAMWIZ.$packageName.ReleaseZip")
 $ownsLock = $false
 try {
     try { $ownsLock = $lock.WaitOne(0) }
@@ -64,9 +65,13 @@ try {
     }
     if (@($entry.version).Count -eq 0) { throw 'The catalog must contain a release version.' }
     if ($entry.version[0].version -cne 'v1.0.0') {
-        throw 'The first public WeatherFX version must be v1.0.0.'
+        throw 'The first public AutoWriting version must be v1.0.0.'
     }
     $version = $catalog[0].version[-1]
+    if ($version.version -cnotmatch '^v[1-9][0-9]*\.[0-9]+\.[0-9]+$') {
+        throw 'The catalog must use a public v1.0.0-or-later version, not an internal development number.'
+    }
+    $publicVersion = $version.version.Substring(1)
     $releaseDate = [datetime]::MinValue
     if ([string]::IsNullOrWhiteSpace($version.version) -or
         @($entry.version | Where-Object version -ceq $version.version).Count -ne 1 -or
@@ -86,6 +91,12 @@ try {
 
     # Hash the same AUF2 bytes that will go into the ZIP.
     Copy-Item -LiteralPath $pluginPath -Destination $tempPlugin
+    $binaryInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($tempPlugin)
+    $binaryVersion = '{0}.{1}.{2}' -f $binaryInfo.FileMajorPart, $binaryInfo.FileMinorPart, $binaryInfo.FileBuildPart
+    if ($binaryInfo.ProductName -cne $packageName -or $binaryInfo.ProductVersion -cne $publicVersion -or
+        $binaryVersion -cne $publicVersion -or $binaryInfo.FilePrivatePart -ne 0 -or $binaryInfo.IsDebug) {
+        throw "Release AUF2 product/version must match $packageName v$publicVersion. Rebuild Win64 Release first."
+    }
     $hashOutput = & $XxhsumPath -H128 --tag $tempPlugin
     if ($LASTEXITCODE -ne 0 -or ($hashOutput -join "`n") -notmatch ' = ([0-9a-f]{32})\s*\z') {
         throw 'Could not calculate the AUF2 XXH3-128 hash.'
@@ -104,7 +115,10 @@ try {
     [IO.File]::WriteAllText($tempNotices, $notices, [Text.UTF8Encoding]::new($false))
     # ルートREADMEを配布用にも使用する。画像はソース公開先を参照し、ZIP内の不足リンクを避ける。
     $readme = [IO.File]::ReadAllText((Join-Path $projectDir 'README.md'))
-    $readme = $readme.Replace('](Sample/', "](https://raw.githubusercontent.com/vramwiz/$packageName/main/Sample/")
+    $readme = $readme.Replace('](Sample/', "](https://raw.githubusercontent.com/vramwiz/$packageName/$($version.version)/Sample/")
+    foreach ($document in @('note.md', 'docs/SPECIFICATION.md', 'docs/IMPLEMENTATION.md', 'setup/README.md')) {
+        $readme = $readme.Replace("]($document)", "](https://github.com/vramwiz/$packageName/blob/$($version.version)/$document)")
+    }
     [IO.File]::WriteAllText($tempReadme, $readme, [Text.UTF8Encoding]::new($false))
     foreach ($file in $packageFiles.Values) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Package file not found: $file" }

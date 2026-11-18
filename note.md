@@ -6,17 +6,25 @@
 - 参照元: `D:\DelphiProg\MyApp\SYNC_WeatherFX`。SDK型定義・項目登録基盤・ビルド設定と作業上の注意を継承する。天気演出の処理・サンプル・Git履歴・IDE個人設定はコピーしない。
 - Delphi名 `SYNC_AutoWriting`、日本語名「自動筆記」、グループ「SYNC」。本番は1つのAUF2。
 - 仕様は `docs/SPECIFICATION.md`。現在の実装範囲と制限は `docs/IMPLEMENTATION.md`。ユーザー向け操作は `README.md`。
-- ユーザー指示によりsetupは参照元の5ファイル（ZIPを含む）をそのままコピーする。WeatherFXの名前・ハッシュ・公開履歴を含むが、今は書き換えたり実行したりしない。
-- 現在のv0.1.5は内部の開発・検証番号。正式な初回公開はv1.0.0とし、内部番号とコピー元の公開履歴を引き継がない。
+- setupは初期状態では参照元の5ファイルをそのままコピーした。2026-11-18のユーザー指定によりSYNC_AutoWriting用の配布バッチ・カタログへ更新した。コピー元のZIPは `Win64/ReleasePreparation/OriginalSetup` へ退避した。
+- 現在は初回公開用v1.0.0の準備。v0.1.xは内部の開発・検証番号であり、正式な公開履歴へ引き継がない。外部公開は別途明示依頼時に行う。
 
 ## 内部番号と公開バージョン（2026-11-18 ユーザー指定）
 
 - 開発中のv0.1.xは内部管理にとどめる。本ノート・検査記録の番号は公開履歴として扱わず、配布カタログJSONの`version`配列や公開タグへ追加しない。Win64 Release構成でのビルド・通常フォルダーへの配置も、正式公開を意味しない。
 - 初回公開時は **v1.0.0**。公開準備で本体の`AW_VERSION`を`1.0.0`へ設定し、表示名、公開用ドキュメント、配布カタログJSONの`version[0].version`、GitHubリリースのタグをv1.0.0にそろえる。内部番号から自動的に公開番号を繰り上げない。
-- 現在の`setup/SYNC_WeatherFX.catalog.json`は参照元をそのままコピーしたもの。記載済みのv1.0.0・公開日・ハッシュはWeatherFX用であり、AutoWritingの公開情報として流用しない。今はsetupを変更・実行しない。
-- AutoWritingの公開準備時に専用のカタログJSONを用意し、初回の`version`配列はv1.0.0の1件から開始する。製品ID、リポジトリ、ZIP名、インストール先、AUF2パスもSYNC_AutoWritingへ合わせる。コピー元や内部検証版の履歴を混ぜない。
+- `setup/SYNC_AutoWriting.catalog.json`はAutoWriting専用。コピー元の製品名・日付・ハッシュをそのまま流用しない。古いWeatherFX用カタログはsetupから置き換えた。
+- 初回の`version`配列はv1.0.0の1件だけ。製品ID、リポジトリ、ZIP名、インストール先、AUF2パスをSYNC_AutoWritingへ合わせる。コピー元や内部検証版の履歴を混ぜない。
 - JSONの`release_date`は実際の公開日とし、内部ビルド日やコピー元の日付を引き継がない。`XXH3_128`は公開するv1.0.0のAUF2そのものから再計算し、ZIPへ入れる実物と一致させる。
 - 設定・学習JSONの`schema`はデータ形式の番号であり、公開バージョンとは別管理。公開番号に合わせて変更しない。`Win64/LatestVerification`内JSONの`Version`は内部検査対象の番号であり、公開カタログの履歴を生成する根拠にしない。
+
+## 配布ZIPとカタログ
+
+- `setup/make_release_zip.bat`から同フォルダーのPowerShellを実行する。通常のRelease AUF2を読み取り、`setup/SYNC_AutoWriting.zip`を作成し、カタログ末尾の`XXH3_128`を梱包した実物から更新する。
+- 本体の`AW_VERSION`とDPROJのWindowsファイル情報を公開番号へそろえる。v1.0.0では製品バージョン1.0.0・ファイルバージョン1.0.0.0。Debugフラグは構成に従う。バッチは内部番号、Debug本体、別製品、JSONとの不一致を拒否する。
+- ZIPは `SYNC_AutoWriting/` 以下のAUF2・README・LICENSE・THIRD_PARTY_NOTICES・SDKライセンスの5ファイル。フォント、ユーザー学習、AUP2、開発ログは同梱しない。READMEの画像・ZIP外の開発資料は公開バージョンのGitHubタグへリンクする。
+- `-ReleaseDirectory`で梱包元を指定できる。xxHashは `Win64/Dependencies/xxHash-0.8.4/xxhsum.exe`、PATH、または`-XxhsumPath`を使用する。ビルド・ホスト起動・ネットワーク公開はバッチから実行しない。
+- JSONの公開日は実際の公開日に合わせる。現在の準備日は2026-11-18。公開日が変わった場合は`release_date`を更新してからZIPとJSONを確認する。
 
 ## ビルド
 
@@ -74,7 +82,7 @@ cmd /c 'call "C:\Program Files (x86)\Embarcadero\Studio\37.0\bin\rsvars.bat" && 
 - インスタンスごとの画像・DC・フォント・キャッシュを所有者が解放する。ホスト所有ポインターを保持しない。全Cコールバックで例外を捕捉する。
 - 日本語の `.pas` / `.dpr` / `.ps1` はUTF-8 BOM付き・CRLF。目的・入出力・所有権・保存対象のコメントを維持し、ユニットは約1,500行以内を目安に責務で分ける。
 - IDE・AviUtl2は明示依頼時だけ起動・操作する。検査EXEの専用フォームだけは自動検査で表示・閉鎖する。AviUtl2実機でのFPSと操作感は別途確認する。
-- コピー元、AUP2、他プラグイン、setupを変更しない。Gitの初期化・コミット・公開は別途依頼時だけ行う。
+- コピー元、AUP2、他プラグインを変更しない。setupは本プロジェクト用として保守する。Gitの初期化・コミット・外部公開は別途依頼時だけ行う。
 
 ## 2026-11-18 初期実装
 
@@ -158,3 +166,12 @@ cmd /c 'call "C:\Program Files (x86)\Embarcadero\Studio\37.0\bin\rsvars.bat" && 
 - ユーザー指定により説明書用GIFを白背景（#FFFFFF）・黒文字（#000000）へ変更し、完成PNGと時系列PNGも再生成した。本体の文字色初期値は白のまま。内部番号・公開用JSONは変更しない。
 - GIFの共通パレットに白・黒を固定し、参照パレットの近似検索で純白が灰色に変わらないよう純白・純黒画素の割当ても固定する。149枚の本番AUF2出力から生成し、保持フレーム統合後121フレーム・7.45秒・無限ループ。全フレームの背景白と完成文字の黒を確認した。
 - 再生成記録は `Win64/DocumentationDemo`。検査用EXEのDemoOnlyモードだけを実行し、IDE・AviUtl2の起動/操作や本体のビルド・差し替えは行っていない。
+
+## v1.0.0 配布準備（2026-11-18）
+
+- ユーザー指定でsetupのバッチ・PowerShell・カタログ・説明書をSYNC_AutoWriting用へ変更した。カタログ名は `SYNC_AutoWriting.catalog.json`、製品IDは `VRAMWIZ.SYNC_AutoWriting`。公開履歴はv1.0.0の1件のみとし、名前・説明・タグ・リポジトリ・ZIP名・インストール/アンインストール先も本プロジェクトへ合わせた。
+- 本体の`AW_VERSION`を1.0.0へ設定し、DPROJでWindowsファイル情報（製品1.0.0、ファイル1.0.0.0、製品名SYNC_AutoWriting）を生成する。検査EXEで実際のDLLの表示番号も照合する。Debug / Releaseは警告0・エラー0、各1,017,493項目が成功した。
+- 配布バッチを実行して `setup/SYNC_AutoWriting.zip` を作成した。AUF2・README・ライセンス3件の5ファイル、カタログのXXH3-128、アンインストール一覧、READMEの公開タグへのリンクを検査した。Debug本体・内部版本体・内部版から始まる履歴・内部版が末尾に混ざる履歴の4ケースを拒否し、正常なZIP/JSONが変わらないことも確認した。
+- 本体の初期文字色は白、説明書GIFは白背景・黒文字を維持する。設定UI画像はv1.0.0本体から更新した。描画処理・学習形式は変更していない。
+- 検査済みReleaseを通常のプラグインフォルダーへ配置した。4,596,224バイト、SHA-256 `E936153FB643DCACDFDFCE13EE0FDC819EB4AF660D67A8956F1632A3B5FEFD2C`。梱包AUF2のXXH3-128は `7bece43ba95c8681ae7a609c3a365b50`。記録は `Win64/ReleasePreparation` と `Win64/LatestVerification`。
+- Git操作によるコミット・タグ作成、GitHub等への外部公開は行っていない。カタログの準備日2026-11-18は、実際の公開日が異なる場合に更新する。

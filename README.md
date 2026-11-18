@@ -1,6 +1,6 @@
 # 自動筆記 — SYNC_AutoWriting
 
-AviUtl2用のDelphiプラグインです。入力した文章を、ペンが文字を書くように少しずつ表示します。開発版 **v0.1.5**。
+AviUtl2用のDelphiプラグインです。入力した文章を、ペンが文字を書くように少しずつ表示します。バージョン **v1.0.0**。
 
 ![本番AUF2による筆記サンプル](Sample/auto_writing.gif)
 
@@ -75,6 +75,6 @@ AviUtl2側の1行文字列では `\n` で改行します。文字としてのバ
 
 導入先は `C:\ProgramData\aviutl2\Plugin\SYNC_AutoWriting\SYNC_AutoWriting.auf2`。開発・検査手順は [note.md](note.md)、仕様は [docs/SPECIFICATION.md](docs/SPECIFICATION.md)、実装状況は [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) を参照してください。
 
-**setupは参照元の内容をそのままコピーした状態です。AutoWriting用の配布作成にはまだ使用しません。**
+配布ZIPとカタログJSONの作成手順は [setup/README.md](setup/README.md) を参照してください。
 
 ソースコードのライセンスはGPL-3.0-only。[LICENSE](LICENSE) と [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) を参照してください。

@@ -1002,6 +1002,7 @@ begin
     Check(Assigned(GetTable) and Assigned(Init) and Assigned(Required) and Assigned(Uninit),'Missing exports');
     Check(Required=2011600,'Minimum SDK version'); Check(Init(2011500)=0,'Old host accepted'); Check(Init(2011600)=1,'Supported host rejected');
     Table:=GetTable; Check(Table<>nil,'No table'); Check(string(Table^.Name)='自動筆記','Plugin name');
+    Check(string(Table^.Information)='自動筆記 / SYNC_AutoWriting v'+AW_VERSION,'Plugin display version differs from the source version');
     Check(string(Table^.Label_)='SYNC','Group'); Check(Table^.Flag=25,'Plugin flags'); Bind;
     Renderer:=TWritingRenderer.Create; Session:=Table^.Func_Create(42); Check(Session<>nil,'Create session');
     FillChar(Video,SizeOf(Video),0); FillChar(Obj,SizeOf(Obj),0); FillChar(Scene,SizeOf(Scene),0);
