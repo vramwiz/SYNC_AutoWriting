@@ -21,7 +21,7 @@ function MergeGlyphStrokes(Glyph: TWritingGlyph; StrokeIndex: Integer): Boolean;
 
 implementation
 
-uses System.SysUtils, System.Types, System.Math, System.Generics.Collections;
+uses System.SysUtils, System.Types, System.Math, System.Generics.Collections, AutoWriting_Reveal;
 
 const
   DX: array[0..7] of Integer = (0,1,1,1,0,-1,-1,-1);
@@ -154,10 +154,9 @@ begin
 end;
 
 procedure PrepareGlyphTiming(Glyph: TWritingGlyph);
-var I,J,K,X,Y,N,Head,Tail,Steps,SeedIndex,QIndex,NX,NY: Integer;
-  Start,Travel,Segment,T,SeedTravel: Double;
-  A,B,P,Last: TPointF; Q: TArray<Integer>;
-  SeedError: TArray<Single>; Err: Double;
+var I,J: Integer;
+  Start,Travel: Double;
+  A,Last: TPointF;
 begin
   Start:=0; Last:=PointF(0,0);
   for I:=0 to High(Glyph.Strokes) do
@@ -171,48 +170,7 @@ begin
     Glyph.Strokes[I].Length:=Max(1,Travel); Start:=Start+Glyph.Strokes[I].Length;
     Last:=Glyph.Strokes[I].Points[High(Glyph.Strokes[I].Points)];
   end;
-  Glyph.TotalDistance:=Start; N:=Length(Glyph.Mask);
-  SetLength(Glyph.Reveal,N); SetLength(SeedError,N); SetLength(Q,N);
-  for I:=0 to N-1 do begin Glyph.Reveal[I]:=-1; SeedError[I]:=1E20 end;
-  Head:=0; Tail:=0;
-  // 全経路を同時に種とし、形状内だけを伝播する。交差で後続の画全体を露出させない。
-  for I:=0 to High(Glyph.Strokes) do
-  begin
-    Travel:=0;
-    for J:=0 to High(Glyph.Strokes[I].Points) do
-    begin
-      A:=Glyph.Strokes[I].Points[J]; B:=A;
-      if J<High(Glyph.Strokes[I].Points) then B:=Glyph.Strokes[I].Points[J+1];
-      Segment:=Distance(A,B); Steps:=Max(1,Ceil(Segment*2));
-      for K:=0 to Steps do
-      begin
-        T:=K/Steps; P:=PointF(A.X+(B.X-A.X)*T,A.Y+(B.Y-A.Y)*T);
-        X:=Round(P.X); Y:=Round(P.Y);
-        if (X<0) or (Y<0) or (X>=Glyph.Width) or (Y>=Glyph.Height) then Continue;
-        SeedIndex:=Y*Glyph.Width+X; if Glyph.Mask[SeedIndex]=0 then Continue;
-        SeedTravel:=Glyph.Strokes[I].StartDistance+Travel+Segment*T;
-        Err:=Sqr(X-P.X)+Sqr(Y-P.Y);
-        if Glyph.Reveal[SeedIndex]<0 then
-        begin Q[Tail]:=SeedIndex; Inc(Tail) end;
-        if Err<SeedError[SeedIndex] then
-        begin Glyph.Reveal[SeedIndex]:=SeedTravel; SeedError[SeedIndex]:=Err end;
-      end;
-      Travel:=Travel+Segment;
-    end;
-  end;
-  while Head<Tail do
-  begin
-    QIndex:=Q[Head]; Inc(Head); X:=QIndex mod Glyph.Width; Y:=QIndex div Glyph.Width;
-    for K:=0 to 3 do
-    begin
-      NX:=X+DX[K*2]; NY:=Y+DY[K*2];
-      if (NX<0) or (NY<0) or (NX>=Glyph.Width) or (NY>=Glyph.Height) then Continue;
-      I:=NY*Glyph.Width+NX;
-      if (Glyph.Mask[I]=0) or (Glyph.Reveal[I]>=0) then Continue;
-      Glyph.Reveal[I]:=Glyph.Reveal[QIndex]; Q[Tail]:=I; Inc(Tail);
-    end;
-  end;
-  for I:=0 to N-1 do if Glyph.Reveal[I]<0 then Glyph.Reveal[I]:=Max(0,Start-0.1);
+  Glyph.TotalDistance:=Start; BuildGlyphReveal(Glyph);
 end;
 
 procedure ReverseGlyphStroke(Glyph: TWritingGlyph; Index: Integer);

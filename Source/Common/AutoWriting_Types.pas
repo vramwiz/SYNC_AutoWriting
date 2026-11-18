@@ -12,7 +12,7 @@ const
   AW_EM = 128;
   AW_MAX_TEXT = 4096;
   AW_MAX_PIXELS = 16777216;
-  AW_VERSION = '0.1.3';
+  AW_VERSION = '0.1.5';
 
 type
   TPenKind = (pkPencil, pkBallpoint, pkFountain, pkBrush);
@@ -77,7 +77,7 @@ begin
   Result.Ratios[ckKanji]:=1; Result.Ratios[ckHiragana]:=0.9;
   Result.Ratios[ckKatakana]:=0.95; Result.Ratios[ckNumber]:=0.9;
   Result.Ratios[ckLatin]:=1; Result.Ratios[ckSymbol]:=1;
-  Result.InkColor:=$202028; Result.PenSize:=1; Result.PenAngle:=-35;
+  Result.InkColor:=$FFFFFF; Result.PenSize:=1; Result.PenAngle:=-35;
   Result.LiftHeight:=16; Result.Scale:=100; Result.Speed:=240;
   Result.Pen:=pkFountain;
 end;

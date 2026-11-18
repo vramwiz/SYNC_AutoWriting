@@ -12,6 +12,7 @@ uses System.SysUtils, System.Classes, System.Math, System.Types, System.Hash,
   System.IOUtils, System.Diagnostics, Winapi.Windows, Winapi.Messages, Winapi.CommCtrl, Vcl.Graphics, Vcl.Imaging.pngimage,
   AviUtl2FilterTypes in '..\Source\Lib\AviUtl2FilterTypes.pas',
   AutoWriting_Types in '..\Source\Common\AutoWriting_Types.pas',
+  AutoWriting_Reveal in '..\Source\Common\AutoWriting_Reveal.pas',
   AutoWriting_Inference in '..\Source\Common\AutoWriting_Inference.pas',
   AutoWriting_Editing in '..\Source\Common\AutoWriting_Editing.pas',
   AutoWriting_Learning in '..\Source\Common\AutoWriting_Learning.pas',
@@ -54,6 +55,8 @@ var
   EditingGlyphSecondPoint: TPointF;
   EditingSecondPoint: TPoint;
   EditingGlyphWidth,EditingGlyphHeight,EditingSelectedStroke: Integer;
+  EditingFontID,EditingCharacter: string;
+  EditingFirst,EditingLast,EditingNormal: TPointF;
   PopupWindow: HWND;
   EditingDragCapture: HWND;
   EditingDragPosition: LPARAM;
@@ -270,6 +273,53 @@ begin
     if TFile.Exists(FileName) then TFile.Delete(FileName);
     if TDirectory.Exists(Folder) then TDirectory.Delete(Folder,False);
   end;
+end;
+
+procedure TestOverlappingReveal;
+var G: TWritingGlyph; X,Y: Integer; Mask: TBytes; FirstEnd: Double;
+begin
+  G:=TWritingGlyph.Create;
+  try
+    G.Width:=41; G.Height:=41; SetLength(G.Mask,41*41);
+    for Y:=8 to 14 do for X:=3 to 37 do G.Mask[Y*41+X]:=255;
+    for Y:=3 to 37 do for X:=17 to 23 do G.Mask[Y*41+X]:=255;
+    SetLength(G.Strokes,2); SetLength(G.Strokes[0].Points,2); SetLength(G.Strokes[1].Points,2);
+    G.Strokes[0].Points[0]:=PointF(3,11); G.Strokes[0].Points[1]:=PointF(37,11);
+    G.Strokes[1].Points[0]:=PointF(20,3); G.Strokes[1].Points[1]:=PointF(20,37);
+    Mask:=Copy(G.Mask); PrepareGlyphTiming(G); FirstEnd:=G.Strokes[0].Length;
+    // 後続の縦画に近い画素も、先に書いた横画の領域から引かない。
+    for Y:=8 to 14 do for X:=3 to 37 do
+      Check(G.Reveal[Y*41+X]<=FirstEnd+1E-5,'Intersection left a hole in the completed horizontal stroke');
+    Check(G.Reveal[30*41+20]>FirstEnd,'A distant future stroke appeared too early');
+    // 円形に広げると交差部の幅が膨らみ、未筆記の縦画が上下に点として見えてしまう。
+    for Y:=3 to 37 do if (Y<8) or (Y>14) then
+      for X:=17 to 23 do Check(G.Reveal[Y*41+X]>FirstEnd,'Future vertical arm leaked outside the horizontal transfer region');
+    Check(CompareMem(@Mask[0],@G.Mask[0],Length(Mask)),'Reveal generation modified the original font mask');
+    Check(Abs(G.Strokes[0].Length-34)<1E-6,'Reveal generation changed writing distance');
+    // 明朝のように横画が細く縦画が太い場合、近い中心線だけでは縦画の外側が横画へ漏れる。
+    FillChar(G.Mask[0],Length(G.Mask),0);
+    for Y:=9 to 11 do for X:=3 to 37 do G.Mask[Y*41+X]:=255;
+    for Y:=3 to 37 do for X:=17 to 24 do G.Mask[Y*41+X]:=255;
+    G.Strokes[0].Points[0]:=PointF(3,10); G.Strokes[0].Points[1]:=PointF(37,10);
+    G.Strokes[1].Points[0]:=PointF(20.5,3); G.Strokes[1].Points[1]:=PointF(20.5,37);
+    PrepareGlyphTiming(G); FirstEnd:=G.Strokes[0].Length;
+    for Y:=9 to 11 do for X:=3 to 37 do
+      Check(G.Reveal[Y*41+X]<=FirstEnd+1E-5,'Thin horizontal transfer has an intersection hole');
+    for Y:=3 to 37 do if (Y<9) or (Y>11) then
+      for X:=17 to 24 do Check(G.Reveal[Y*41+X]>FirstEnd,'Thick future vertical stroke leaked into thin horizontal transfer');
+    // 縦横を入れ替えても同じ領域関係になること。
+    FillChar(G.Mask[0],Length(G.Mask),0);
+    for Y:=3 to 37 do for X:=9 to 11 do G.Mask[Y*41+X]:=255;
+    for Y:=17 to 24 do for X:=3 to 37 do G.Mask[Y*41+X]:=255;
+    G.Strokes[0].Points[0]:=PointF(10,3); G.Strokes[0].Points[1]:=PointF(10,37);
+    G.Strokes[1].Points[0]:=PointF(3,20.5); G.Strokes[1].Points[1]:=PointF(37,20.5);
+    PrepareGlyphTiming(G); FirstEnd:=G.Strokes[0].Length;
+    for Y:=3 to 37 do for X:=9 to 11 do
+      Check(G.Reveal[Y*41+X]<=FirstEnd+1E-5,'Thin vertical transfer has an intersection hole');
+    for Y:=17 to 24 do for X:=3 to 37 do if (X<9) or (X>11) then
+      Check(G.Reveal[Y*41+X]>FirstEnd,'Thick future horizontal stroke leaked into thin vertical transfer');
+    Writeln('PASS stroke transfer fills intersections without future-arm dots and preserves mask and timing');
+  finally G.Free end;
 end;
 
 procedure TestSelectedStrokeOperations;
@@ -580,6 +630,14 @@ begin
         Check(ApplyHandle=0,'Editor button panel must be removed');
         Check(GetWindowLong(EditingStrokeList,GWL_STYLE) and LBS_EXTENDEDSEL<>0,'Stroke list must support multiple selection');
         CaptureDialog('ui_stroke_editor.png');
+        if SendMessage(EditingStrokeList,LB_GETCOUNT,0,0)>1 then
+        begin
+          SetFocus(EditingStrokeList); SendMessage(EditingStrokeList,LB_SETSEL,0,-1);
+          SendMessage(EditingStrokeList,LB_SETSEL,1,1); SendMessage(EditingStrokeList,LB_SETCARETINDEX,1,0);
+          SendMessage(GetParent(EditingStrokeList),WM_COMMAND,
+            (GetDlgCtrlID(EditingStrokeList) and $FFFF) or (LBN_SELCHANGE shl 16),LPARAM(EditingStrokeList));
+          CaptureDialog('ui_selected_stroke2.png');
+        end;
         SetFocus(EditorSurface);
         SendMessage(DialogHandle,WM_KEYDOWN,VK_SPACE,0); UIStage:=4;
       end;
@@ -642,6 +700,46 @@ begin
   NotifyStrokeSelection;
 end;
 
+procedure CheckSelectionHighlight;
+var ListDC,EditorDC: HDC; Row: TRect; Color: COLORREF; Shift,Offset,X,Y,Count,Maximum: Integer;
+begin
+  RedrawWindow(EditorSurface,nil,0,RDW_INVALIDATE or RDW_UPDATENOW);
+  RedrawWindow(EditingStrokeList,nil,0,RDW_INVALIDATE or RDW_UPDATENOW);
+  SendMessage(EditingStrokeList,LB_GETITEMRECT,EditingSelectedStroke,LPARAM(@Row));
+  ListDC:=GetDC(EditingStrokeList); EditorDC:=GetDC(EditorSurface);
+  try
+    Color:=GetPixel(ListDC,18,Row.Top+24); Maximum:=0;
+    // 一覧の選択色と同色の太線が中央に十分な幅で描かれているかを確認する。
+    for Shift:=-3 to 3 do
+    begin
+      Count:=0;
+      for Offset:=-4 to 4 do
+      begin
+        X:=Round(EditingPoint.X-EditingNormal.Y*Shift*4+EditingNormal.X*Offset);
+        Y:=Round(EditingPoint.Y+EditingNormal.X*Shift*4+EditingNormal.Y*Offset);
+        if GetPixel(EditorDC,X,Y)=Color then Inc(Count);
+      end;
+      Maximum:=Max(Maximum,Count);
+    end;
+    Check(Maximum>=6,'Selected stroke highlight is too thin or differs from the row color');
+  finally ReleaseDC(EditorSurface,EditorDC); ReleaseDC(EditingStrokeList,ListDC) end;
+end;
+
+procedure CheckPointDirectionReversed;
+var Glyph: TWritingGlyph; Warning: string;
+begin
+  Glyph:=TWritingGlyph.Create;
+  try
+    Glyph.FontID:=EditingFontID; Glyph.Character:=EditingCharacter;
+    Glyph.Width:=EditingGlyphWidth; Glyph.Height:=EditingGlyphHeight;
+    Check(LoadGlyphLearning(Glyph,Warning) and (Warning=''),
+      'Point direction reversal was not saved: '+Warning+'; file='+BoolToStr(TFile.Exists(EditingFile),True));
+    Check(Glyph.Strokes[EditingSelectedStroke].Points[0]=EditingLast,'Point menu did not reverse the start');
+    Check(Glyph.Strokes[EditingSelectedStroke].Points[High(Glyph.Strokes[EditingSelectedStroke].Points)]=EditingFirst,
+      'Point menu did not reverse the end');
+  finally Glyph.Free end;
+end;
+
 procedure StartNativeGroupDrag;
 var R,Row: TRect; P: TPoint; Position: LPARAM; DC: HDC;
 begin
@@ -692,6 +790,7 @@ begin
         EditingPoint:=Point(Round(X+EditingGlyphPoint.X*Scale),Round(Y+EditingGlyphPoint.Y*Scale));
         EditingSecondPoint:=Point(Round(X+EditingGlyphSecondPoint.X*Scale),Round(Y+EditingGlyphSecondPoint.Y*Scale));
         SetNativeStrokeSelection([EditingSelectedStroke]);
+        CheckSelectionHighlight;
         CaptureDialog('ui_edit_before.png'); EditingStage:=2;
       end;
       2: begin
@@ -702,7 +801,16 @@ begin
       3: begin
         Menu:=OpenPopupHandle;
         Check(GetMenuItemCount(Menu)>=8,'Editor popup missing actions');
-        CaptureWindow(PopupWindow,'ui_point_menu.png'); EditingStage:=4; ChoosePopupItem(0);
+        CaptureWindow(PopupWindow,'ui_point_menu.png'); EditingStage:=30; ChoosePopupItem(1);
+      end;
+      30: begin
+        CheckPointDirectionReversed; CaptureDialog('ui_direction_reversed.png');
+        SetFocus(EditorSurface); CtrlKey(Ord('Z'));
+        Check(not TFile.Exists(EditingFile),'Undo point direction reversal left learning behind');
+        EditingClick(EditingPoint); EditingStage:=31; PostContext(EditorSurface,EditingPoint);
+      end;
+      31: begin
+        OpenPopupHandle; EditingStage:=4; ChoosePopupItem(0);
       end;
       4: begin
         Check(SendMessage(EditingStrokeList,LB_GETCOUNT,0,0)=EditingInitialCount+1,'Native split click did not create a stroke');
@@ -740,10 +848,12 @@ begin
         Check(SendMessage(EditingStrokeList,LB_GETCOUNT,0,0)=EditingInitialCount+2,'Cannot prepare multiple strokes for drag test');
         EditingBeforeDragHash:=THashSHA2.GetHashStringFromFile(EditingFile);
         EditingStage:=9; StartNativeGroupDrag; CaptureDialog('ui_drag_insert.png');
-      end;
-      9: begin
+        // キャプチャ中にイベントループへ戻らず、利用者のマウス移動の影響を受ける前にドロップする。
+        SendMessage(EditingDragCapture,WM_MOUSEMOVE,MK_LBUTTON,EditingDragPosition);
         SendMessage(EditingDragCapture,WM_LBUTTONUP,0,EditingDragPosition);
         SetWindowPos(DialogHandle,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE);
+      end;
+      9: begin
         Check(THashSHA2.GetHashStringFromFile(EditingFile)<>EditingBeforeDragHash,'Drag did not reorder selected rows');
         SetFocus(EditingStrokeList); CtrlKey(Ord('Z'));
         Check(THashSHA2.GetHashStringFromFile(EditingFile)=EditingBeforeDragHash,'Undo did not restore drag order');
@@ -781,16 +891,22 @@ begin
     end;
     Check(EditingFile<>'','No unused native editing test character');
     Glyph:=Engine.Glyph(S.Text); EditingInitialCount:=Length(Glyph.Strokes);
+    EditingFontID:=Engine.FontID; EditingCharacter:=S.Text;
     Check(EditingInitialCount>0,'Native editing test glyph has no strokes');
     EditingSelectedStroke:=-1;
     for I:=0 to High(Glyph.Strokes) do
       if (Length(Glyph.Strokes[I].Points)>=3) and (Glyph.Strokes[I].Length>8) then
       begin EditingSelectedStroke:=I; Break end;
     Check(EditingSelectedStroke>=0,'Native editing test glyph has no splittable path');
+    EditingFirst:=Glyph.Strokes[EditingSelectedStroke].Points[0];
+    EditingLast:=Glyph.Strokes[EditingSelectedStroke].Points[High(Glyph.Strokes[EditingSelectedStroke].Points)];
     Segment:=Max(0,(Length(Glyph.Strokes[EditingSelectedStroke].Points)-1) div 3);
     EditingGlyphPoint:=PointF(
       (Glyph.Strokes[EditingSelectedStroke].Points[Segment].X+Glyph.Strokes[EditingSelectedStroke].Points[Segment+1].X)/2,
       (Glyph.Strokes[EditingSelectedStroke].Points[Segment].Y+Glyph.Strokes[EditingSelectedStroke].Points[Segment+1].Y)/2);
+    var A,B: TPointF; var Len: Double;
+    A:=Glyph.Strokes[EditingSelectedStroke].Points[Segment]; B:=Glyph.Strokes[EditingSelectedStroke].Points[Segment+1];
+    Len:=Max(1E-6,Distance(A,B)); EditingNormal:=PointF(-(B.Y-A.Y)/Len,(B.X-A.X)/Len);
     Segment:=Min(High(Glyph.Strokes[EditingSelectedStroke].Points)-1,Max(1,(Length(Glyph.Strokes[EditingSelectedStroke].Points)-1)*2 div 3));
     EditingGlyphSecondPoint:=Glyph.Strokes[EditingSelectedStroke].Points[Segment];
     EditingGlyphWidth:=Glyph.Width; EditingGlyphHeight:=Glyph.Height;
@@ -804,7 +920,7 @@ begin
     finally if EditingTimer<>0 then KillTimer(0,EditingTimer) end;
     Check(EditingError='','Native stroke editing failure: '+EditingError);
     Check(EditingStage=10,'Native stroke editing did not finish');
-    Writeln('PASS point popup, colored overlap choices, multi-selection join, drag insertion line, shortcuts and cleanup');
+    Writeln('PASS thick selected stroke, point direction reversal, popups, join, drag insertion, shortcuts and cleanup');
   finally
     Engine.Free;
     if (EditingFile<>'') and TFile.Exists(EditingFile) then TFile.Delete(EditingFile);
@@ -821,7 +937,7 @@ begin
   Configure(S); Duration:=Renderer.Duration(S); SizeFrame(800,450);
   SetLength(HostInput,Scene.Width*Scene.Height);
   for J:=0 to High(HostInput) do
-  begin HostInput[J].R:=255; HostInput[J].G:=255; HostInput[J].B:=255; HostInput[J].A:=255 end;
+  begin HostInput[J].R:=60; HostInput[J].G:=68; HostInput[J].B:=80; HostInput[J].A:=255 end;
   ForceDirectories(TPath.Combine(OutputDirectory,'DemoFrames')); FrameCount:=Ceil((Duration+1.4)*20);
   for I:=0 to FrameCount do
   begin
@@ -831,6 +947,44 @@ begin
   HostInput:=nil; Writeln(Format('DEMO %d frames at 20 fps; writing %.3f seconds',[FrameCount+1,Duration]));
 end;
 
+procedure RenderGlyphSamples;
+var S: TWritingSettings; I,J: Integer; PG: TPlacedGlyph; Time: Double; A: TWritingPixels; Timing: TStringList;
+begin
+  S:=DefaultWritingSettings; S.Text:='自'; S.FontSize:=150; S.Speed:=240;
+  S.InkColor:=$202028; // 露出方式の比較は両バージョンとも黒文字・白背景へそろえる。
+  if ParamCount>=4 then S.Text:=ParamStr(4);
+  Configure(S); Renderer.Prepare(S); PG:=Renderer.PlacedGlyphs[High(Renderer.PlacedGlyphs)]; SizeFrame(420,420);
+  SetLength(HostInput,Scene.Width*Scene.Height);
+  for J:=0 to High(HostInput) do
+  begin HostInput[J].R:=255; HostInput[J].G:=255; HostInput[J].B:=255; HostInput[J].A:=255 end;
+  ForceDirectories(TPath.Combine(OutputDirectory,'GlyphSamples')); Timing:=TStringList.Create;
+  try
+    for I:=0 to High(PG.Glyph.Strokes) do
+    begin
+      Time:=(PG.StartDistance+(PG.Glyph.Strokes[I].StartDistance+PG.Glyph.Strokes[I].Length)*PG.Scale)/S.Speed;
+      A:=Render(Max(0,Time-1E-5));
+      SavePNG(A,Scene.Width,Scene.Height,Format('GlyphSamples/stroke_%2.2d.png',[I+1]));
+      Timing.Add(Format('stroke_%2.2d=%.6f',[I+1,Time],TFormatSettings.Invariant));
+      S.ShowPen:=False; Configure(S); A:=Render(Max(0,Time-1E-5));
+      SavePNG(A,Scene.Width,Scene.Height,Format('GlyphSamples/ink_%2.2d.png',[I+1]));
+      if I<High(PG.Glyph.Strokes) then
+        Time:=(PG.StartDistance+(PG.Glyph.Strokes[I].StartDistance+PG.Glyph.Strokes[I].Length+
+          PG.Glyph.Strokes[I+1].StartDistance)*0.5*PG.Scale)/S.Speed;
+      A:=Render(Time); SavePNG(A,Scene.Width,Scene.Height,Format('GlyphSamples/lift_%2.2d.png',[I+1]));
+      Time:=(PG.StartDistance+(PG.Glyph.Strokes[I].StartDistance+PG.Glyph.Strokes[I].Length*0.08)*PG.Scale)/S.Speed;
+      A:=Render(Time); SavePNG(A,Scene.Width,Scene.Height,Format('GlyphSamples/start_%2.2d.png',[I+1]));
+      S.ShowPen:=True; Configure(S);
+    end;
+    A:=Render(Renderer.Duration(S)+1); SavePNG(A,Scene.Width,Scene.Height,'GlyphSamples/complete.png');
+    Timing.SaveToFile(TPath.Combine(OutputDirectory,'GlyphSamples/timing.txt'),TEncoding.UTF8);
+    SetLength(A,Length(PG.Glyph.Mask));
+    for I:=0 to High(A) do
+    begin A[I].R:=255-PG.Glyph.Mask[I]; A[I].G:=A[I].R; A[I].B:=A[I].R; A[I].A:=255 end;
+    SavePNG(A,PG.Glyph.Width,PG.Glyph.Height,'GlyphSamples/mask.png');
+  finally Timing.Free; HostInput:=nil end;
+  Writeln('Created production glyph samples: ',Length(PG.Glyph.Strokes),' strokes');
+end;
+
 var Module: HMODULE; GetTable: TGetTable; Init: TInitialize; Required: TRequired;
   Uninit: TUninitialize; Session: Pointer;
 begin
@@ -838,7 +992,8 @@ begin
   try
     if ParamCount<2 then raise Exception.Create('Usage: AutoWriting_Tests.exe plugin.auf2 output-directory');
     OutputDirectory:=ExpandFileName(ParamStr(2)); ForceDirectories(OutputDirectory);
-    TestSettingsAndLearning; TestStrokeEditing; TestSelectedStrokeOperations; TestFontCacheAndLayout;
+    if not ((ParamCount>=3) and (ParamStr(3)='--glyph-samples')) then
+    begin TestSettingsAndLearning; TestStrokeEditing; TestOverlappingReveal; TestSelectedStrokeOperations; TestFontCacheAndLayout end;
     Module:=LoadLibrary(PChar(ExpandFileName(ParamStr(1))));
     Check(Module<>0,'Cannot load production AUF2: '+SysErrorMessage(GetLastError));
     @GetTable:=GetProcAddress(Module,'GetFilterPluginTable'); @Init:=GetProcAddress(Module,'InitializePlugin');
@@ -851,7 +1006,8 @@ begin
     FillChar(Video,SizeOf(Video),0); FillChar(Obj,SizeOf(Obj),0); FillChar(Scene,SizeOf(Scene),0);
     Scene.Rate:=30; Scene.Scale:=1; Video.Scene:=@Scene; Video.Object_:=@Obj;
     Video.GetImageData:=GetImage; Video.SetImageData:=SetImage; Video.UserData:=Session;
-    TestFinalFont; TestProduction; TestSettingsDialog; TestNativeStrokeEditing;
+    if (ParamCount>=3) and (ParamStr(3)='--glyph-samples') then RenderGlyphSamples
+    else begin TestFinalFont; TestProduction; TestSettingsDialog; TestNativeStrokeEditing end;
     if (ParamCount>=3) and (ParamStr(3)='--demo') then begin Video.UserData:=Session; RenderDemo end;
     Writeln('ALL PASS: ',Tests,' checks');
   except on E: Exception do begin Writeln('FAIL ',E.ClassName,': ',E.Message); ExitCode:=1 end end;

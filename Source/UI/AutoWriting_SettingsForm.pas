@@ -139,7 +139,7 @@ const
   KIND_NAMES: array[TCharacterKind] of string = ('漢字','ひらがな','カタカナ','数字','英字','記号');
   STROKE_COLORS: array[0..9] of TColor = ($4848D6,$CE8742,$74A153,$B667B1,$C2B13C,$6796E2,$C3765C,$9B69CB,$419CA2,$82954C);
   EA_SPLIT=1; EA_JOIN=2; EA_REVERSE=3; EA_UP=4; EA_DOWN=5;
-  EA_UNDO=6; EA_REDO=7; EA_RESET=8; EA_PLAY=9; EA_SELECTALL=10;
+  EA_UNDO=6; EA_REDO=7; EA_RESET=8; EA_PLAY=9; EA_SELECTALL=10; EA_REVERSEPOINT=11;
 
 constructor TWritingStrokeListBox.Create(AOwner: TComponent);
 begin inherited; FDropIndex:=-1 end;
@@ -213,7 +213,7 @@ var Bitmap: TBitmap; I: Integer;
   procedure CommonActions(Menu: TPopupMenu);
   begin
     AddAction(Menu,'選択した画を結合',EA_JOIN,Ord('J'),[ssCtrl]);
-    AddAction(Menu,'向きを反転',EA_REVERSE,Ord('R'),[ssCtrl]);
+    if Menu<>FEditorMenu then AddAction(Menu,'描画方向を反転',EA_REVERSE,Ord('R'),[ssCtrl]);
     AddAction(Menu,'上へ移動',EA_UP,VK_UP,[ssAlt]); AddAction(Menu,'下へ移動',EA_DOWN,VK_DOWN,[ssAlt]);
     AddAction(Menu,'-',0,0,[]);
     AddAction(Menu,'元に戻す',EA_UNDO,Ord('Z'),[ssCtrl]); AddAction(Menu,'やり直す',EA_REDO,Ord('Y'),[ssCtrl]);
@@ -238,6 +238,7 @@ begin
   finally Bitmap.Free end;
   FEditorMenu:=TPopupMenu.Create(Self); FEditorMenu.Images:=FPointIcons;
   AddAction(FEditorMenu,'選択した点で分割',EA_SPLIT,Ord('K'),[ssCtrl]);
+  AddAction(FEditorMenu,'この画の描画方向を反転',EA_REVERSEPOINT,Ord('R'),[ssCtrl]);
   FChoosePointItem:=AddAction(FEditorMenu,'重なる点を選び直す',0,0,[]);
   AddAction(FEditorMenu,'-',0,0,[]); CommonActions(FEditorMenu);
   FStrokeMenu:=TPopupMenu.Create(Self); CommonActions(FStrokeMenu);
@@ -354,6 +355,7 @@ begin
     end;
     EA_JOIN: Result:=FStrokes.SelCount>=2;
     EA_REVERSE,EA_UP,EA_DOWN: Result:=FStrokes.SelCount>0;
+    EA_REVERSEPOINT: Result:=(FSelectedHit.Stroke>=0) and (FSelectedHit.Stroke<Length(FCurrent.Strokes));
     EA_UNDO: Result:=FUndo.Count>0;
     EA_REDO: Result:=FRedo.Count>0;
     EA_RESET,EA_PLAY,EA_SELECTALL: Result:=True;
@@ -372,7 +374,7 @@ procedure TWritingSettingsForm.MenuAction(Sender: TObject);
 begin ExecuteEditAction(TMenuItem(Sender).Tag) end;
 
 procedure TWritingSettingsForm.ExecuteEditAction(Action: Integer);
-var Before: TGlyphEditState; Indices,After: TArray<Integer>; I,Index: Integer;
+var Before: TGlyphEditState; Indices,After: TArray<Integer>; I,Index,KeepPoint: Integer; KeepHit: TStrokeHit;
 begin
   if not CanEditAction(Action) then Exit;
   if Action=EA_UNDO then begin ApplyHistory(False); Exit end;
@@ -380,7 +382,10 @@ begin
   if Action=EA_PLAY then
   begin FSinglePlaying:=not FSinglePlaying; FSingleStart:=GetTickCount64; FEditPaint.Invalidate; Exit end;
   if Action=EA_SELECTALL then begin FStrokes.SelectAll; SelectStroke(nil); Exit end;
-  Indices:=SelectedStrokes; Before:=CaptureGlyphState(FCurrent); FSinglePlaying:=False;
+  Indices:=SelectedStrokes;
+  if Action=EA_REVERSEPOINT then begin Indices:=[FSelectedHit.Stroke]; Action:=EA_REVERSE end;
+  KeepHit:=FSelectedHit; KeepPoint:=FSelectedPoint;
+  Before:=CaptureGlyphState(FCurrent); FSinglePlaying:=False;
   case Action of
     EA_SPLIT: begin
       Index:=FSelectedHit.Stroke;
@@ -391,7 +396,15 @@ begin
       if not JoinSelectedStrokes(FCurrent,Indices,Index) then Exit;
       After:=[Index];
     end;
-    EA_REVERSE: begin for I in Indices do ReverseGlyphStroke(FCurrent,I); After:=Indices end;
+    EA_REVERSE: begin
+      for I in Indices do ReverseGlyphStroke(FCurrent,I); After:=Indices;
+      if (Length(Indices)=1) and (KeepHit.Stroke=Indices[0]) then
+      begin
+        Index:=High(FCurrent.Strokes[KeepHit.Stroke].Points);
+        KeepHit.Segment:=Index-1-KeepHit.Segment; KeepHit.T:=1-KeepHit.T;
+        if KeepPoint>=0 then KeepPoint:=Index-KeepPoint;
+      end else KeepHit.Stroke:=-1;
+    end;
     EA_UP,EA_DOWN: begin
       Index:=-1; if Action=EA_DOWN then Index:=1;
       if not ShiftSelectedStrokes(FCurrent,Indices,Index,After) then Exit;
@@ -404,6 +417,7 @@ begin
     else Exit;
   end;
   CommitEdit(Before); SetStrokeSelection(After); UpdateEditorStatus; FEditPaint.Invalidate;
+  if (Action=EA_REVERSE) and (KeepHit.Stroke>=0) then SelectPathPoint(KeepHit,KeepPoint);
 end;
 
 constructor TWritingSettingsForm.CreateForSettings(const S: TWritingSettings);
@@ -686,7 +700,8 @@ begin
   Text:=FCurrent.Character+' — '+State+' / '+IntToStr(Length(FCurrent.Strokes))+' 画。';
   if FSelectedHit.Stroke>=0 then Text:=Text+Format(' 選択点: %d画目。右クリック→分割（Ctrl+K）。',[FSelectedHit.Stroke+1])
   else Text:=Text+' 点を選択→右クリックで分割。重なる点は色付き候補から選択。';
-  Text:=Text+' 画一覧はCtrl/Shiftで複数選択→右クリックで結合。ドラッグ中の横線が移動先です。';
+  Text:=Text+Format(' 選択中: %d画。太線＝選択、●始点 → □終点。',[FStrokes.SelCount]);
+  Text:=Text+' 画一覧はCtrl/Shiftで複数選択→右クリックで結合。';
   FEditorStatus.Caption:=Text; FEditorStatus.Hint:=Text;
 end;
 
@@ -765,8 +780,98 @@ begin
 end;
 
 procedure TWritingSettingsForm.PaintEditor(Sender: TObject);
-var C: TCanvas; I,J,Selected,X,Y: Integer; P,Q: TPointF; R: TRect; S: TWritingSettings;
-  Time,Duration,Fit: Double; Bitmap: TBitmap; Row: PByte; A: Integer; LastHandle: TPointF;
+var C: TCanvas; I,X,Y: Integer; R: TRect; S: TWritingSettings;
+  Time,Duration,Fit: Double; Bitmap: TBitmap; Row: PByte; A: Integer;
+  function ScreenPoint(const P: TPointF): TPointF;
+  begin Result:=PointF(FViewX+P.X*FViewScale,FViewY+P.Y*FViewScale) end;
+  function Selected(Index: Integer): Boolean;
+  begin Result:=(Index<FStrokes.Count) and FStrokes.Selected[Index] end;
+  function PathColor(Index: Integer; Active: Boolean): TColor;
+  var Color: Cardinal;
+  begin
+    Result:=STROKE_COLORS[Index mod 10]; if Active then Exit;
+    Color:=ColorToRGB(Result);
+    Result:=RGB((GetRValue(Color)+510) div 3,(GetGValue(Color)+510) div 3,(GetBValue(Color)+510) div 3);
+  end;
+  procedure Trace(Index: Integer; Color: TColor; Width: Integer);
+  var J: Integer; P: TPointF;
+  begin
+    C.Pen.Color:=Color; C.Pen.Width:=Width; C.Pen.Style:=psSolid;
+    for J:=0 to High(FCurrent.Strokes[Index].Points) do
+    begin
+      P:=ScreenPoint(FCurrent.Strokes[Index].Points[J]);
+      if J=0 then C.MoveTo(Round(P.X),Round(P.Y)) else C.LineTo(Round(P.X),Round(P.Y));
+    end;
+  end;
+  procedure Handles(Index: Integer; Active: Boolean);
+  var J,X,Y,Radius: Integer; P,Last: TPointF;
+  begin
+    Last:=PointF(-1E9,-1E9); Radius:=3; if Active then Radius:=4;
+    C.Brush.Style:=bsSolid; C.Brush.Color:=PathColor(Index,Active); C.Pen.Color:=clWhite; C.Pen.Width:=1;
+    for J:=0 to High(FCurrent.Strokes[Index].Points) do
+    begin
+      P:=ScreenPoint(FCurrent.Strokes[Index].Points[J]);
+      if (Distance(Last,P)<26) and (J<>High(FCurrent.Strokes[Index].Points)) then Continue;
+      X:=Round(P.X); Y:=Round(P.Y); C.Ellipse(X-Radius,Y-Radius,X+Radius+1,Y+Radius+1); Last:=P;
+    end;
+  end;
+  procedure LabelAt(const P: TPointF; const Text: string; Color: TColor);
+  var X,Y,W,H: Integer;
+  begin
+    C.Font.Size:=10; C.Font.Style:=[fsBold]; C.Font.Color:=Color;
+    W:=C.TextWidth(Text)+8; H:=C.TextHeight(Text)+4;
+    X:=EnsureRange(Round(P.X),2,Max(2,FEditPaint.Width-W-2));
+    Y:=EnsureRange(Round(P.Y),2,Max(2,FEditPaint.Height-H-2));
+    C.Brush.Style:=bsSolid; C.Brush.Color:=clWhite; C.Pen.Color:=clWhite; C.Pen.Width:=1;
+    C.RoundRect(X,Y,X+W,Y+H,5,5); C.TextOut(X+4,Y+2,Text);
+  end;
+  procedure ArrowAt(Index: Integer; AtDistance,Size: Double);
+  var J: Integer; P,Q,Tip: TPointF; Len,T,DX,DY: Double; Points: array[0..2] of TPoint;
+  begin
+    for J:=1 to High(FCurrent.Strokes[Index].Points) do
+    begin
+      P:=ScreenPoint(FCurrent.Strokes[Index].Points[J-1]); Q:=ScreenPoint(FCurrent.Strokes[Index].Points[J]);
+      Len:=Distance(P,Q); if Len<1E-6 then Continue;
+      if AtDistance>Len then begin AtDistance:=AtDistance-Len; Continue end;
+      T:=AtDistance/Len; DX:=(Q.X-P.X)/Len; DY:=(Q.Y-P.Y)/Len;
+      Tip:=PointF(P.X+(Q.X-P.X)*T,P.Y+(Q.Y-P.Y)*T);
+      Points[0]:=Point(Round(Tip.X),Round(Tip.Y));
+      Points[1]:=Point(Round(Tip.X-DX*Size-DY*Size*0.55),Round(Tip.Y-DY*Size+DX*Size*0.55));
+      Points[2]:=Point(Round(Tip.X-DX*Size+DY*Size*0.55),Round(Tip.Y-DY*Size-DX*Size*0.55));
+      C.Brush.Style:=bsSolid; C.Brush.Color:=STROKE_COLORS[Index mod 10];
+      C.Pen.Color:=clWhite; C.Pen.Width:=4; C.Polygon(Points);
+      C.Pen.Color:=$303038; C.Pen.Width:=1; C.Polygon(Points); Exit;
+    end;
+  end;
+  procedure DirectionAndEnds(Index: Integer);
+  var P,Q: TPointF; J,X,Y: Integer; Total,At,ArrowSize: Double; Color: TColor;
+  begin
+    if Length(FCurrent.Strokes[Index].Points)=0 then Exit;
+    P:=ScreenPoint(FCurrent.Strokes[Index].Points[0]);
+    Q:=ScreenPoint(FCurrent.Strokes[Index].Points[High(FCurrent.Strokes[Index].Points)]);
+    Color:=STROKE_COLORS[Index mod 10]; Total:=0;
+    for J:=1 to High(FCurrent.Strokes[Index].Points) do
+      Total:=Total+Distance(FCurrent.Strokes[Index].Points[J-1],FCurrent.Strokes[Index].Points[J])*FViewScale;
+    if Total>2 then
+    begin
+      ArrowSize:=Min(14,Max(6,Total/3)); At:=42;
+      while At<Total-38 do begin ArrowAt(Index,At,ArrowSize); At:=At+74 end;
+      ArrowAt(Index,Max(Total/2,Total-22),ArrowSize);
+    end;
+    // 白い四角が終点、塗りつぶした丸が始点。閉じた経路では両方を同じ位置に重ねる。
+    X:=Round(Q.X); Y:=Round(Q.Y); C.Brush.Style:=bsSolid; C.Brush.Color:=clWhite;
+    C.Pen.Color:=clWhite; C.Pen.Width:=6; C.Rectangle(X-11,Y-11,X+12,Y+12);
+    C.Pen.Color:=Color; C.Pen.Width:=3; C.Rectangle(X-11,Y-11,X+12,Y+12);
+    X:=Round(P.X); Y:=Round(P.Y); C.Brush.Color:=Color; C.Pen.Color:=clWhite; C.Pen.Width:=3;
+    C.Ellipse(X-9,Y-9,X+10,Y+10); C.Pen.Color:=$303038; C.Pen.Width:=1;
+    C.Brush.Style:=bsClear; C.Ellipse(X-9,Y-9,X+10,Y+10);
+    if Distance(P,Q)<26 then
+      LabelAt(PointF((P.X+Q.X)/2+18,(P.Y+Q.Y)/2-30),Format('%d 始点・終点',[Index+1]),Color)
+    else begin
+      LabelAt(PointF(P.X+16,P.Y-30),Format('%d 始点',[Index+1]),Color);
+      LabelAt(PointF(Q.X+16,Q.Y+12),Format('%d 終点',[Index+1]),Color);
+    end;
+  end;
 begin
   C:=FEditPaint.Canvas; C.Brush.Style:=bsSolid; C.Pen.Style:=psSolid;
   C.Brush.Color:=$FAFAFA; C.FillRect(FEditPaint.ClientRect); if FCurrent=nil then Exit;
@@ -799,40 +904,20 @@ begin
     R:=Rect(Round(FViewX),Round(FViewY),Round(FViewX+FCurrent.Width*FViewScale),Round(FViewY+FCurrent.Height*FViewScale));
     C.StretchDraw(R,Bitmap);
   finally Bitmap.Free end;
-  Selected:=FStrokes.ItemIndex; C.Font.Size:=12; C.Font.Style:=[fsBold];
+  // 非選択経路を先に薄く描き、選択した経路を最後に白黒の縁と8pxの色線で重ねる。
   for I:=0 to High(FCurrent.Strokes) do
   begin
-    C.Pen.Color:=STROKE_COLORS[I mod 10]; C.Pen.Width:=2;
-    if (I<FStrokes.Count) and FStrokes.Selected[I] then C.Pen.Width:=4;
-    if (I=Selected) and (I<FStrokes.Count) and FStrokes.Selected[I] then C.Pen.Width:=5;
-    LastHandle:=PointF(-1E9,-1E9);
-    for J:=0 to High(FCurrent.Strokes[I].Points) do
-    begin
-      P:=FCurrent.Strokes[I].Points[J]; X:=Round(FViewX+P.X*FViewScale); Y:=Round(FViewY+P.Y*FViewScale);
-      if J=0 then C.MoveTo(X,Y) else C.LineTo(X,Y);
-      if (Distance(LastHandle,PointF(X,Y))>=18) or (J=High(FCurrent.Strokes[I].Points)) then
-      begin
-        C.Brush.Color:=STROKE_COLORS[I mod 10]; C.Pen.Color:=clWhite; C.Pen.Width:=1;
-        C.Ellipse(X-5,Y-5,X+6,Y+6); C.MoveTo(X,Y); LastHandle:=PointF(X,Y);
-        C.Pen.Color:=STROKE_COLORS[I mod 10]; C.Pen.Width:=2;
-        if (I<FStrokes.Count) and FStrokes.Selected[I] then C.Pen.Width:=4;
-      end;
-    end;
+    if Selected(I) then Continue;
+    Trace(I,PathColor(I,False),2); Handles(I,False);
     if Length(FCurrent.Strokes[I].Points)=0 then Continue;
-    P:=FCurrent.Strokes[I].Points[0]; Q:=FCurrent.Strokes[I].Points[High(FCurrent.Strokes[I].Points)];
-    X:=Round(FViewX+P.X*FViewScale); Y:=Round(FViewY+P.Y*FViewScale);
-    C.Brush.Color:=C.Pen.Color; C.Ellipse(X-5,Y-5,X+6,Y+6);
-    C.Brush.Style:=bsClear; C.Font.Color:=C.Pen.Color; C.TextOut(X+7,Y-19,IntToStr(I+1));
-    C.Brush.Style:=bsSolid; C.Brush.Color:=clWhite;
-    X:=Round(FViewX+Q.X*FViewScale); Y:=Round(FViewY+Q.Y*FViewScale); C.Ellipse(X-5,Y-5,X+6,Y+6);
-    // 終点直前の接線から小さな矢印を描き、色だけに依存せず方向を示す。
-    if Length(FCurrent.Strokes[I].Points)>1 then
-    begin
-      P:=FCurrent.Strokes[I].Points[Max(0,High(FCurrent.Strokes[I].Points)-3)];
-      Fit:=ArcTan2(Q.Y-P.Y,Q.X-P.X);
-      C.MoveTo(X-Round(Cos(Fit-0.5)*13),Y-Round(Sin(Fit-0.5)*13)); C.LineTo(X,Y);
-      C.LineTo(X-Round(Cos(Fit+0.5)*13),Y-Round(Sin(Fit+0.5)*13));
-    end;
+    var P: TPointF; P:=ScreenPoint(FCurrent.Strokes[I].Points[0]);
+    C.Font.Size:=9; C.Font.Style:=[]; C.Font.Color:=STROKE_COLORS[I mod 10]; C.Brush.Style:=bsClear;
+    C.TextOut(Round(P.X)+7,Round(P.Y)-18,IntToStr(I+1));
+  end;
+  for I:=0 to High(FCurrent.Strokes) do if Selected(I) then
+  begin
+    Trace(I,clWhite,14); Trace(I,$303038,11); Trace(I,STROKE_COLORS[I mod 10],8);
+    Handles(I,True); DirectionAndEnds(I);
   end;
   // 選択点は全経路より手前に、元の画の色と大きな白黒の縁で確実に表示する。
   if (FSelectedHit.Stroke>=0) and (FSelectedHit.Stroke<Length(FCurrent.Strokes)) then

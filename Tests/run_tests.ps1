@@ -1,7 +1,9 @@
 ﻿param(
     [string]$PluginPath = 'C:\ProgramData\aviutl2\Plugin\SYNC_AutoWriting\SYNC_AutoWriting.auf2',
     [string]$OutputDirectory,
-    [switch]$Demo
+    [switch]$Demo,
+    [switch]$GlyphSamplesOnly,
+    [string]$GlyphSampleText = '自'
 )
 
 # 本番AUF2を検査する。IDE・AviUtl2は起動しない。
@@ -20,6 +22,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Test build failed.' }
     $testArguments = @($PluginPath, $OutputDirectory)
     if ($Demo) { $testArguments += '--demo' }
+    elseif ($GlyphSamplesOnly) { $testArguments += @('--glyph-samples', $GlyphSampleText) }
     & (Join-Path $buildDirectory 'AutoWriting_Tests.exe') @testArguments
     if ($LASTEXITCODE -ne 0) { throw 'Production AUF2 tests failed.' }
 }

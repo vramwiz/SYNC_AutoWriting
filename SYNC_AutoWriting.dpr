@@ -10,6 +10,7 @@ uses
   AviUtl2FilterTypes in 'Source\Lib\AviUtl2FilterTypes.pas',
   PluginFilterTable in 'Source\Lib\FilterTable\PluginFilterTable.pas',
   AutoWriting_Types in 'Source\Common\AutoWriting_Types.pas',
+  AutoWriting_Reveal in 'Source\Common\AutoWriting_Reveal.pas',
   AutoWriting_Inference in 'Source\Common\AutoWriting_Inference.pas',
   AutoWriting_Editing in 'Source\Common\AutoWriting_Editing.pas',
   AutoWriting_Learning in 'Source\Common\AutoWriting_Learning.pas',
