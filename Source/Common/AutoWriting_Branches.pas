@@ -15,7 +15,7 @@ type
     Root,Tip: TPointF;
   end;
 
-// 読取専用。端点結合・重複経路を除外し、枝の端が主線の内部へ接続する場合だけ返す。
+// 読取専用。端点結合・重複経路・長い曲線を除外し、短い枝が主線の内部へ接続する場合だけ返す。
 function FindStrokeBranch(const Main,Branch: TStroke; out Attachment: TStrokeBranch): Boolean;
 // Glyphの経路だけを置換する。元マスク・ファイルは変更しない。失敗時は元の経路を残す。
 // 成功後の距離・露出表は呼出側が再計算する。主線のID・方向・両端と未選択画は保持する。
@@ -79,6 +79,9 @@ begin
   if (Length(Main.Points)<2) or (Length(Branch.Points)<2) then Exit;
   MainLength:=PathLength(Main); BranchLength:=PathLength(Branch);
   if (MainLength<4) or (BranchLength<1E-6) then Exit;
+  // 長い画や曲線全体を枝先だけへ置き換えない。吸収するのは短い突起に限る。
+  if BranchLength>MainLength*0.5 then Exit;
+  if BranchLength>1.4*Distance(Branch.Points[0],Branch.Points[High(Branch.Points)]) then Exit;
   Margin:=Max(2.0,Min(6.0,BranchLength*0.25));
   for Side:=0 to 1 do
   begin

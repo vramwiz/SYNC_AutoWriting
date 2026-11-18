@@ -23,3 +23,5 @@ setupの配布処理はWeatherFXを参照して継承し、SYNC_AutoWriting用�
 文字中心線の細線化にはZhang-Suenの2段階削除条件を独自実装しています。外部実装のソースコード・学習モデル・筆順辞書は同梱していません。
 
 Delphi RTL/VCLとWindows GDIを使用します。フォント、AviUtl2本体、Delphi開発環境、外部のペン画像は同梱しません。
+
+設定画面にはDelphi 37.0付属のVCLスタイル「Windows Modern Dark」（Embarcadero）を使用し、AUF2のリソースへ組み込んでいます。スタイルの参照元はRAD Studioの `Styles/WindowsModernDark.vsf` です。

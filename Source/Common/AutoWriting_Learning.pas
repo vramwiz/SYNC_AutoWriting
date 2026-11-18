@@ -57,7 +57,7 @@ begin
         (J.GetValue<string>('fontID','')<>Glyph.FontID) or
         (J.GetValue<string>('character','')<>Glyph.Character) then raise EConvertError.Create('Learning identity mismatch');
       A:=J.GetValue<TJSONArray>('strokes');
-      if (A=nil) or (A.Count=0) or (A.Count>1024) then raise EConvertError.Create('Invalid stroke count');
+      if (A=nil) or (A.Count>1024) then raise EConvertError.Create('Invalid stroke count');
       SetLength(Paths,A.Count); Total:=0;
       for I:=0 to A.Count-1 do
       begin
@@ -99,7 +99,6 @@ end;
 procedure SaveGlyphLearning(Glyph: TWritingGlyph);
 var J,O: TJSONObject; A,P,XY,Vertices: TJSONArray; I,K: Integer; FileName,TempName: string;
 begin
-  if Length(Glyph.Strokes)=0 then Exit;
   J:=TJSONObject.Create; Lock.Acquire; TempName:='';
   try
     J.AddPair('schema',TJSONNumber.Create(1)); J.AddPair('em',TJSONNumber.Create(AW_EM));

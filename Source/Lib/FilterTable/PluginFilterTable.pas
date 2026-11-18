@@ -25,6 +25,7 @@ procedure AddButton(var Item: TFILTER_ITEM_BUTTON; Name: PWideChar;
 procedure AddButton(var Item: TFILTER_ITEM_BUTTON; Name: PWideChar;
   Callback: TFilterItemButtonCallback2); overload;
 procedure AddString(var Item: TFILTER_ITEM_STRING; Name, Value: PWideChar);
+procedure AddText(var Item: TFILTER_ITEM_TEXT; Name, Value: PWideChar);
 procedure AddColor(var Item: TFILTER_ITEM_COLOR; Name: PWideChar;
   B, G, R: Byte; X: Byte = 255);
 procedure AddTrack(var Item: TFILTER_ITEM_TRACK; Name: PWideChar;
@@ -121,6 +122,14 @@ end;
 procedure AddString(var Item: TFILTER_ITEM_STRING; Name, Value: PWideChar);
 begin
   Item.ItemType := 'string';
+  Item.Name := Name;
+  Item.Value := Value;
+  RegisterItem(@Item);
+end;
+
+procedure AddText(var Item: TFILTER_ITEM_TEXT; Name, Value: PWideChar);
+begin
+  Item.ItemType := 'text';
   Item.Name := Name;
   Item.Value := Value;
   RegisterItem(@Item);

@@ -20,7 +20,8 @@ type
 var
   Module: HMODULE; Table: PFILTER_PLUGIN_TABLE; GetTable: TGetTable; Reset: TReset; Read: TRead; FullScan: TFullScan;
   Video: TFILTER_PROC_VIDEO; Obj: TOBJECT_INFO; Scene: TSCENE_INFO; Session: Pointer;
-  TextItem,DetailsItem: PFILTER_ITEM_STRING; PenItem: PFILTER_ITEM_SELECT;
+  TextItem: PFILTER_ITEM_TEXT; DetailsItem: PFILTER_ITEM_STRING; PenItem: PFILTER_ITEM_SELECT;
+  InkColorItem: PFILTER_ITEM_COLOR;
   SizeTrack,AngleTrack,LightXTrack,LightYTrack: PFILTER_ITEM_TRACK;
   TextBacking,DetailsBacking: string; OutputCalls: Integer;
   Capture: Boolean; Captured: TWritingPixels;
@@ -34,8 +35,9 @@ end;
 procedure Configure(const S: TWritingSettings);
 var Choice: ^TFILTER_ITEM_SELECT_ITEM; Found: Boolean;
 begin
-  TextBacking:=EncodeHostText(S.Text); DetailsBacking:=SettingsJSON(S);
+  TextBacking:=S.Text; DetailsBacking:=SettingsJSON(S);
   TextItem^.Value:=PChar(TextBacking); DetailsItem^.Value:=PChar(DetailsBacking);
+  InkColorItem^.R:=Byte(S.InkColor shr 16); InkColorItem^.G:=Byte(S.InkColor shr 8); InkColorItem^.B:=Byte(S.InkColor);
   Choice:=Pointer(PenItem^.List); Found:=False;
   while Choice^.Name<>nil do begin
     if string(Choice^.Name)=string(AW_PEN_NAMES[S.Pen]) then begin PenItem^.Value:=Choice^.Value; Found:=True; Break end;
@@ -82,9 +84,10 @@ begin
   P:=PPointer(Table^.Items);
   while P^<>nil do begin
     Name:=PItem(P^)^.Name; Kind:=PItem(P^)^.Kind;
-    if Name='表示文字列' then TextItem:=PFILTER_ITEM_STRING(P^);
+    if Name='表示文字列' then TextItem:=PFILTER_ITEM_TEXT(P^);
     if (Name='詳細設定') and (Kind='string') then DetailsItem:=PFILTER_ITEM_STRING(P^);
     if Name='ペン種類' then PenItem:=PFILTER_ITEM_SELECT(P^);
+    if Name='文字色' then InkColorItem:=PFILTER_ITEM_COLOR(P^);
     if Name='ペンサイズ' then SizeTrack:=PFILTER_ITEM_TRACK(P^);
     if Name='ペン角度' then AngleTrack:=PFILTER_ITEM_TRACK(P^);
     if Name='光源X' then LightXTrack:=PFILTER_ITEM_TRACK(P^);
@@ -92,7 +95,7 @@ begin
     Inc(P);
   end;
   if (TextItem=nil) or (DetailsItem=nil) or (PenItem=nil) or (SizeTrack=nil) or (AngleTrack=nil) or
-    (LightXTrack=nil) or (LightYTrack=nil) then raise Exception.Create('Missing production parameters');
+    (LightXTrack=nil) or (LightYTrack=nil) or (InkColorItem=nil) then raise Exception.Create('Missing production parameters');
 end;
 
 procedure VerifyQuillBounds(J: TJSONObject);

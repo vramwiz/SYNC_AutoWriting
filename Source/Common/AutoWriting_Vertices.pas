@@ -16,6 +16,9 @@ function InsertPathVertex(var Stroke: TStroke; Segment: Integer; T: Double;
 // Originalは借用。周囲の操作点までの点列を連続的に変形し、Strokeへ独立した複製を返す。
 function MovePathVertex(const Original: TStroke; Index: Integer; const Position: TPointF;
   var Stroke: TStroke): Boolean;
+// 操作点を削除し、隣の操作点どうしを結ぶ。端点は次の操作点まで短くする。
+// 2つの操作点は残す。点列と固定点配列を新しく作り、共有元を変更しない。
+function DeletePathVertex(var Stroke: TStroke; Index: Integer): Boolean;
 function SlicePinnedVertices(const Vertices: TArray<Integer>; First,Last: Integer): TArray<Integer>;
 function ReversePinnedVertices(const Vertices: TArray<Integer>; PointCount: Integer): TArray<Integer>;
 function JoinPinnedVertices(const A,B: TArray<Integer>; BOffset: Integer): TArray<Integer>;
@@ -118,7 +121,7 @@ end;
 
 function MovePathVertex(const Original: TStroke; Index: Integer; const Position: TPointF;
   var Stroke: TStroke): Boolean;
-var Vertices: TArray<Integer>; I,First,Last: Integer;
+var Vertices: TArray<Integer>; I,First,Last,PinIndex: Integer;
   Travel,LeftLength,RightLength,Weight,DX,DY: Double;
 begin
   Result:=False; if (Index<0) or (Index>=Length(Original.Points)) then Exit;
@@ -138,7 +141,30 @@ begin
     else Weight:=1-(Travel-LeftLength)/Max(1E-9,RightLength);
     Stroke.Points[I]:=PointF(Original.Points[I].X+DX*Weight,Original.Points[I].Y+DY*Weight);
   end;
-  Result:=True;
+  // 移動した操作点は再簡略化で消えないよう固定する。
+  Result:=InsertPathVertex(Stroke,Max(0,Index-1),Ord(Index>0),True,PinIndex);
+end;
+
+function DeletePathVertex(var Stroke: TStroke; Index: Integer): Boolean;
+var Vertices,Pins: TArray<Integer>; Points: TArray<TPointF>;
+  I,At,First,Last,Removed,N: Integer;
+begin
+  Result:=False; Vertices:=EditingVertices(Stroke); At:=-1;
+  if Length(Vertices)<=2 then Exit;
+  for I:=0 to High(Vertices) do if Vertices[I]=Index then begin At:=I; Break end;
+  if At<0 then Exit;
+  First:=0; Last:=High(Stroke.Points);
+  if At>0 then First:=Vertices[At-1]+1;
+  if At<High(Vertices) then Last:=Vertices[At+1]-1;
+  Removed:=Last-First+1; if Removed<=0 then Exit;
+  SetLength(Points,Length(Stroke.Points)-Removed);
+  for I:=0 to First-1 do Points[I]:=Stroke.Points[I];
+  for I:=Last+1 to High(Stroke.Points) do Points[I-Removed]:=Stroke.Points[I];
+  SetLength(Pins,Length(Stroke.PinnedVertices)); N:=0;
+  for I in Stroke.PinnedVertices do
+    if (I<First) or (I>Last) then
+    begin At:=I; if I>Last then Dec(At,Removed); Pins[N]:=At; Inc(N) end;
+  SetLength(Pins,N); Stroke.Points:=Points; Stroke.PinnedVertices:=Pins; Result:=True;
 end;
 
 end.

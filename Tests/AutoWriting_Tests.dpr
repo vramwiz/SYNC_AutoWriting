@@ -20,7 +20,8 @@ uses System.SysUtils, System.Classes, System.Math, System.Types, System.Hash,
   AutoWriting_Learning in '..\Source\Common\AutoWriting_Learning.pas',
   AutoWriting_Fonts in '..\Source\Common\AutoWriting_Fonts.pas',
   AutoWriting_Renderer in '..\Source\Common\AutoWriting_Renderer.pas',
-  AutoWriting_PenTests in 'AutoWriting_PenTests.pas';
+  AutoWriting_PenTests in 'AutoWriting_PenTests.pas',
+  AutoWriting_EditRegressionTests in 'AutoWriting_EditRegressionTests.pas';
 
 type
   TGetTable = function: PFILTER_PLUGIN_TABLE; cdecl;
@@ -34,8 +35,10 @@ function PrintWindow(Wnd: HWND; DC: HDC; Flags: UINT): BOOL; stdcall; external '
 
 var
   Table: PFILTER_PLUGIN_TABLE;
-  TextItem,DetailsItem: PFILTER_ITEM_STRING;
+  TextItem: PFILTER_ITEM_TEXT;
+  DetailsItem: PFILTER_ITEM_STRING;
   PenItem: PFILTER_ITEM_SELECT;
+  InkColorItem: PFILTER_ITEM_COLOR;
   Tracks: array[0..8] of PFILTER_ITEM_TRACK;
   Button: PFILTER_ITEM_BUTTON;
   Video: TFILTER_PROC_VIDEO; Obj: TOBJECT_INFO; Scene: TSCENE_INFO;
@@ -51,7 +54,7 @@ var
   UITimer: UINT_PTR;
   UIStage,UICount,UIEdits,DialogPenChoice: Integer;
   UIError: string;
-  UIValues: array[0..7] of UTF8String;
+  UIValues: array[0..8] of UTF8String;
   EditingTimer: UINT_PTR;
   EditingStage,EditingTicks,EditingInitialCount: Integer;
   EditingStrokeList: HWND;
@@ -95,12 +98,14 @@ begin Scene.Width:=W; Scene.Height:=H; Obj.Width:=W; Obj.Height:=H; HostInput:=n
 
 procedure Configure(const S: TWritingSettings);
 begin
-  TextBacking:=EncodeHostText(S.Text); DetailBacking:=SettingsJSON(S);
+  TextBacking:=S.Text; DetailBacking:=SettingsJSON(S);
   TextItem^.Value:=PChar(TextBacking); DetailsItem^.Value:=PChar(DetailBacking);
   Tracks[0]^.Value:=S.X; Tracks[1]^.Value:=S.Y; Tracks[2]^.Value:=S.Scale;
   Tracks[3]^.Value:=S.Transparency; Tracks[4]^.Value:=S.Speed; Tracks[5]^.Value:=S.PenAngle; PenItem^.Value:=PenChoiceValue(S.Pen);
   Tracks[6]^.Value:=S.LightX; Tracks[7]^.Value:=S.LightY;
   Tracks[8]^.Value:=S.PenSize*100;
+  InkColorItem^.R:=Byte(S.InkColor shr 16); InkColorItem^.G:=Byte(S.InkColor shr 8);
+  InkColorItem^.B:=Byte(S.InkColor);
 end;
 
 function Render(Time: Double): TWritingPixels;
@@ -140,9 +145,10 @@ begin
   while P^<>nil do
   begin
     Inc(N); Check(N<30,'Unterminated parameters'); Name:=PItem(P^)^.Name;
-    if Name='表示文字列' then TextItem:=PFILTER_ITEM_STRING(P^);
+    if Name='表示文字列' then TextItem:=PFILTER_ITEM_TEXT(P^);
     if Name='詳細設定' then if string(PItem(P^)^.ItemType)='string' then DetailsItem:=PFILTER_ITEM_STRING(P^);
     if Name='ペン種類' then PenItem:=PFILTER_ITEM_SELECT(P^);
+    if Name='文字色' then InkColorItem:=PFILTER_ITEM_COLOR(P^);
     if Name='設定' then Button:=PFILTER_ITEM_BUTTON(P^);
     if Name='X座標' then Tracks[0]:=PFILTER_ITEM_TRACK(P^);
     if Name='Y座標' then Tracks[1]:=PFILTER_ITEM_TRACK(P^);
@@ -155,8 +161,12 @@ begin
     if Name='ペンサイズ' then Tracks[8]:=PFILTER_ITEM_TRACK(P^);
     Inc(P);
   end;
-  Check(N=14,'Expected 12 visible parameters plus hidden details and hiding rule');
+  Check(N=17,'Expected 13 visible parameters, two pen group markers, hidden details and hiding rule');
   Check((TextItem<>nil) and (DetailsItem<>nil) and (PenItem<>nil) and (Button<>nil),'Missing parameters');
+  Check((InkColorItem<>nil) and (InkColorItem^.R=255) and (InkColorItem^.G=255) and
+    (InkColorItem^.B=255),'Host ink color must be registered with a white default');
+  Check((SizeOf(TFILTER_ITEM_TEXT)=3*SizeOf(Pointer)) and (string(TextItem^.ItemType)='text'),
+    'Host text input must use the SDK multiline text item');
   for I:=0 to 8 do Check(Tracks[I]<>nil,'Missing track');
   Check((Tracks[8]^.Value=100) and (Abs(Tracks[8]^.Step-0.01)<1E-12),'Pen size must default to 100 with step 0.01');
   Check(Assigned(Button^.Callback2),'Settings callback missing');
@@ -648,6 +658,39 @@ begin
   Writeln('PASS final glyph equals original font mask, pixel for pixel');
 end;
 
+procedure TestHostMemoText;
+var S: TWritingSettings; A,Expected: TWritingPixels; Sample: string;
+begin
+  S:=DefaultWritingSettings; S.ShowPen:=False; S.FontSize:=36; SizeFrame(640,360);
+  for Sample in TArray<string>.Create('一'+#10+'二', '一'+sLineBreak+sLineBreak+'二', '一\n二\文字') do
+  begin
+    S.Text:=Sample; Configure(S); A:=Render(1000);
+    Renderer.Render(nil,Scene.Width,Scene.Height,1000,S,Expected);
+    Check(Same(A,Expected),'Host memo changed newlines, blank lines or literal backslashes');
+  end;
+  SavePNG(A,Scene.Width,Scene.Height,'memo_literal_backslash.png');
+  Writeln('PASS host memo preserves LF/CRLF, blank lines and literal backslashes');
+end;
+
+procedure TestHostInkColor;
+var S: TWritingSettings; Color: Cardinal; Pixels: TWritingPixels; Pixel: TPIXEL_RGBA; Count: Integer;
+begin
+  S:=DefaultWritingSettings; S.Text:='永'; S.FontSize:=64; S.ShowPen:=False; SizeFrame(256,256);
+  for Color in TArray<Cardinal>.Create($FFFFFF,$12A4E7,$000000) do
+  begin
+    S.InkColor:=Color; Configure(S); S.InkColor:=$888888;
+    DetailBacking:=SettingsJSON(S); DetailsItem^.Value:=PChar(DetailBacking);
+    Pixels:=Render(1000); Count:=0;
+    for Pixel in Pixels do if Pixel.A=255 then
+    begin
+      Inc(Count); Check((Pixel.R=Byte(Color shr 16)) and (Pixel.G=Byte(Color shr 8)) and
+        (Pixel.B=Byte(Color)),'Host color did not override stale detailed settings or RGB channels were swapped');
+    end;
+    Check(Count>100,'No opaque ink for the host color check');
+  end;
+  Writeln('PASS white, mixed RGB and black host ink colors override detailed settings');
+end;
+
 procedure TestProduction;
 var S: TWritingSettings; A,B,Final,Previous: TWritingPixels; Duration,D2: Double;
   I,J,Count: Integer; Watch: TStopwatch;
@@ -710,20 +753,25 @@ begin
   if string(Item)='光源X' then Result:=PAnsiChar(UIValues[5]);
   if string(Item)='光源Y' then Result:=PAnsiChar(UIValues[6]);
   if string(Item)='ペンサイズ' then Result:=PAnsiChar(UIValues[7]);
+  if string(Item)='文字色' then Result:=PAnsiChar(UIValues[8]);
 end;
 
 function UISet(Handle: OBJECT_HANDLE; Effect,Item: PWideChar; Value: PAnsiChar): Boolean; cdecl;
+var Color: Cardinal;
 begin
   Result:=False;
   if (Handle<>Pointer(1234)) or (string(Effect)<>'自動筆記:2') then begin UIError:='Wrong settings target'; Exit end;
   if string(Item)='詳細設定' then begin UIValues[0]:=UTF8String(Value); DetailBacking:=string(UIValues[0]); DetailsItem^.Value:=PChar(DetailBacking); Result:=True end;
-  if string(Item)='表示文字列' then begin UIValues[1]:=UTF8String(Value); TextBacking:=string(UIValues[1]); TextItem^.Value:=PChar(TextBacking); Result:=True end;
+  if string(Item)='表示文字列' then begin UIValues[1]:=UTF8String(Value); TextBacking:=DecodeHostText(string(UIValues[1])); TextItem^.Value:=PChar(TextBacking); Result:=True end;
   if string(Item)='ペン種類' then begin UIValues[2]:=UTF8String(Value); Result:=True end;
   if string(Item)='ペン速度' then begin UIValues[3]:=UTF8String(Value); Result:=True end;
   if string(Item)='ペン角度' then begin UIValues[4]:=UTF8String(Value); Result:=True end;
   if string(Item)='光源X' then begin UIValues[5]:=UTF8String(Value); Result:=True end;
   if string(Item)='光源Y' then begin UIValues[6]:=UTF8String(Value); Result:=True end;
   if string(Item)='ペンサイズ' then begin UIValues[7]:=UTF8String(Value); Result:=True end;
+  if string(Item)='文字色' then begin UIValues[8]:=UTF8String(Value);
+    Color:=StrToIntDef('$'+string(UIValues[8]),$FFFFFF); InkColorItem^.R:=Byte(Color shr 16);
+    InkColorItem^.G:=Byte(Color shr 8); InkColorItem^.B:=Byte(Color); Result:=True end;
   if Result then Inc(UIEdits);
 end;
 
@@ -839,7 +887,7 @@ begin
   DC:=GetDC(Surface);
   try
     Before:=GetPixel(DC,8,8);
-    Check(Before=RGB(240,240,240),Description+': animation checkerboard is missing');
+    Check(Before=RGB(32,32,32),Description+': dark animation checkerboard is missing');
     // 背景消去と次のWM_PAINTの間にも、表示済みフレームが消えないことを検査する。
     for I:=1 to 20 do
     begin
@@ -864,7 +912,7 @@ begin
         Check(ApplyHandle=0,'Apply/cancel buttons must be removed');
         CheckRetainedFrame(PreviewSurface,'Text preview');
         CaptureDialog('ui_preview.png');
-        SendMessage(MemoHandle,WM_SETTEXT,0,LPARAM(PChar('自'+sLineBreak+'本文の更新')));
+        SendMessage(MemoHandle,WM_SETTEXT,0,LPARAM(PChar('自'+sLineBreak+'本文\nの更新')));
         Check(SendMessage(PenHandle,CB_GETCURSEL,0,0)=2,'Opening settings changed the saved fountain pen');
         SendMessage(PenHandle,CB_SETCURSEL,DialogPenChoice,0);
         SendMessage(GetParent(PenHandle),WM_COMMAND,(GetDlgCtrlID(PenHandle) and $FFFF) or (CBN_SELCHANGE shl 16),LPARAM(PenHandle));
@@ -937,9 +985,10 @@ begin
   DialogPenChoice:=1; if Mode=2 then DialogPenChoice:=5 else if Mode=3 then DialogPenChoice:=4;
   S:=DefaultWritingSettings; S.Speed:=240.25; S.PenAngle:=35.25; Configure(S);
   S.LightX:=-100.25; S.LightY:=-140.25; S.PenSize:=1.00005; Configure(S);
-  UIValues[0]:=UTF8String(DetailBacking); UIValues[1]:=UTF8String(TextBacking);
+  UIValues[0]:=UTF8String(DetailBacking); UIValues[1]:=UTF8String(EncodeHostText(TextBacking));
   UIValues[2]:='万年筆'; UIValues[3]:='240.25,480,1'; UIValues[4]:='35.25,70,1'; FillChar(Edit,SizeOf(Edit),0);
   UIValues[5]:='-100.25,180,1'; UIValues[6]:='-140.25,160,1'; UIValues[7]:='100.005,200,1';
+  UIValues[8]:=UTF8String(IntToHex(S.InkColor,6));
   Edit.GetObjectItemValue:=UIGet; Edit.SetObjectItemValue:=UISet;
   UITimer:=SetTimer(0,0,250,@UITick);
   Check(UITimer<>0,'Cannot start UI test timer');
@@ -947,7 +996,8 @@ begin
   finally if UITimer<>0 then KillTimer(0,UITimer) end;
   Check(UIError='','Settings UI failure: '+UIError); Check(UIStage=5,'Settings UI did not finish');
   Check(UIEdits=2+Ord(Mode=1)*5,Format('Only changed host items should be saved (mode %d, writes %d)',[Mode,UIEdits]));
-  Check(DecodeHostText(string(UIValues[1]))='自'+sLineBreak+'本文の更新','UI text not sent to host');
+  Check(DecodeHostText(string(UIValues[1]))='自'+sLineBreak+'本文\nの更新','UI text not sent to host');
+  Check(TextBacking='自'+sLineBreak+'本文\nの更新','Host memo did not decode the edited alias value');
   Check(string(UIValues[2])=string(AW_PEN_NAMES[AW_PEN_ORDER[DialogPenChoice]]),'UI pen not sent to host');
   Check(string(UIValues[3])='240.25,480,1','Unedited animated fractional speed was overwritten');
   if Mode<>1 then begin
@@ -1106,14 +1156,16 @@ begin
         finally Learned.Free end;
         CaptureDialog('ui_vertex_created.png');
         EditingClick(EditingPoint);
-        Position:=((EditingPoint.X+18) and $FFFF) or (((EditingPoint.Y+14) and $FFFF) shl 16);
+        Position:=((EditingPoint.X+32) and $FFFF) or (((EditingPoint.Y+14) and $FFFF) shl 16);
         // 頂点作成後は同じ操作点をドラッグでき、2回のUndoで元の未学習状態へ戻る。
         SendMessage(EditorSurface,WM_LBUTTONDOWN,MK_LBUTTON,
-          (EditingPoint.X and $FFFF) or ((EditingPoint.Y and $FFFF) shl 16));
+          ((EditingPoint.X+14) and $FFFF) or ((EditingPoint.Y and $FFFF) shl 16));
         SendMessage(EditorSurface,WM_MOUSEMOVE,MK_LBUTTON,Position);
         SendMessage(EditorSurface,WM_LBUTTONUP,0,Position);
         CaptureDialog('ui_vertex_dragged.png'); SetFocus(EditorSurface); CtrlKey(Ord('Z'));
         Check(TFile.Exists(EditingFile),'Undo vertex drag removed the created vertex');
+        EditingClick(EditingPoint); SendMessage(DialogHandle,WM_KEYDOWN,VK_DELETE,0);
+        CtrlKey(Ord('Z')); Check(TFile.Exists(EditingFile),'Undo vertex deletion did not restore its creation');
         CtrlKey(Ord('Z')); Check(not TFile.Exists(EditingFile),'Undo creation left vertex learning behind');
         EditingStage:=33; PostContext(EditorSurface,EditingPoint);
       end;
@@ -1174,6 +1226,10 @@ begin
         Check(THashSHA2.GetHashStringFromFile(EditingFile)<>EditingBeforeDragHash,'Drag did not reorder selected rows');
         SetFocus(EditingStrokeList); CtrlKey(Ord('Z'));
         Check(THashSHA2.GetHashStringFromFile(EditingFile)=EditingBeforeDragHash,'Undo did not restore drag order');
+        SetNativeStrokeSelection([EditingSelectedStroke,EditingSelectedStroke+1]);
+        SendMessage(DialogHandle,WM_KEYDOWN,VK_DELETE,0);
+        Check(SendMessage(EditingStrokeList,LB_GETCOUNT,0,0)=EditingInitialCount,'Cannot delete selected strokes from the list');
+        CtrlKey(Ord('Z'));
         CtrlKey(Ord('Z')); CtrlKey(Ord('Z'));
         Check(not TFile.Exists(EditingFile),'Native drag test did not clean up learning');
         KillTimer(0,EditingTimer); EditingTimer:=0; EditingStage:=10; PostMessage(DialogHandle,WM_CLOSE,0,0);
@@ -1413,7 +1469,7 @@ begin
     if ParamCount<2 then raise Exception.Create('Usage: AutoWriting_Tests.exe plugin.auf2 output-directory');
     OutputDirectory:=ExpandFileName(ParamStr(2)); ForceDirectories(OutputDirectory);
     if not ((ParamCount>=3) and ((ParamStr(3)='--glyph-samples') or (ParamStr(3)='--demo-only'))) then
-    begin TestSettingsAndLearning; TestStrokeEditing; TestEditingVertices; TestOverlappingReveal; TestSelectedStrokeOperations; TestBranchAbsorption; TestFontCacheAndLayout end;
+    begin TestSettingsAndLearning; TestStrokeEditing; TestEditingVertices; TestEditRegressions(Check); TestOverlappingReveal; TestSelectedStrokeOperations; TestBranchAbsorption; TestFontCacheAndLayout end;
     Module:=LoadLibrary(PChar(ExpandFileName(ParamStr(1))));
     Check(Module<>0,'Cannot load production AUF2: '+SysErrorMessage(GetLastError));
     @GetTable:=GetProcAddress(Module,'GetFilterPluginTable'); @Init:=GetProcAddress(Module,'InitializePlugin');
@@ -1434,7 +1490,11 @@ begin
     PenTests.PenItem:=PenItem;
     if (ParamCount>=3) and (ParamStr(3)='--glyph-samples') then RenderGlyphSamples
     else if (ParamCount>=3) and (ParamStr(3)='--demo-only') then RenderDemo
-    else begin TestFinalFont; TestPenRendering(PenTests); TestProduction; TestSettingsDialog; TestNativeStrokeEditing; TestNativeBranchJoin end;
+    else begin
+      TestFinalFont; TestPenRendering(PenTests); TestHostMemoText; TestHostInkColor; TestProduction;
+      if not ((ParamCount>=3) and (ParamStr(3)='--no-ui')) then
+      begin TestSettingsDialog; TestNativeStrokeEditing; TestNativeBranchJoin end;
+    end;
     if (ParamCount>=3) and (ParamStr(3)='--demo') then begin Video.UserData:=Session; RenderDemo end;
     Writeln('ALL PASS: ',Tests,' checks');
   except on E: Exception do begin Writeln('FAIL ',E.ClassName,': ',E.Message); ExitCode:=1 end end;

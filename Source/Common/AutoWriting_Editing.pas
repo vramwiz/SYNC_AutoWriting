@@ -38,6 +38,9 @@ function JoinStrokeEndpoints(Glyph: TWritingGlyph; A: Integer; AStart: Boolean;
 // 選択画の枝は主線へ吸収し、それ以外は一覧順に端点を結合する。原本は成功時だけ更新する。
 function JoinSelectedStrokes(Glyph: TWritingGlyph; const Indices: TArray<Integer>;
   out ResultIndex: Integer): Boolean;
+// 選択画をまとめて除去する。未選択画の形とID・順序は保持し、全画削除も許可する。
+function DeleteSelectedStrokes(Glyph: TWritingGlyph; const Indices: TArray<Integer>;
+  out ResultIndex: Integer): Boolean;
 // InsertIndexは元の一覧の行間0..Count。複数行を元の順序でまとめて挿入する。
 function MoveSelectedStrokes(Glyph: TWritingGlyph; const Indices: TArray<Integer>;
   InsertIndex: Integer; var NewIndices: TArray<Integer>): Boolean;
@@ -235,6 +238,21 @@ begin
     if Result[I] then Exit(nil);
     Result[I]:=True;
   end;
+end;
+
+function DeleteSelectedStrokes(Glyph: TWritingGlyph; const Indices: TArray<Integer>;
+  out ResultIndex: Integer): Boolean;
+var Selected: TArray<Boolean>; Paths: TArray<TStroke>; I,J,First: Integer;
+begin
+  Result:=False; ResultIndex:=-1;
+  if Glyph=nil then Exit;
+  Selected:=SelectionMask(Length(Glyph.Strokes),Indices);
+  if (Length(Selected)=0) or (Length(Indices)=0) then Exit;
+  SetLength(Paths,Length(Glyph.Strokes)-Length(Indices)); J:=0; First:=-1;
+  for I:=0 to High(Glyph.Strokes) do
+    if Selected[I] then begin if First<0 then First:=I end
+    else begin Paths[J]:=Glyph.Strokes[I]; Inc(J) end;
+  Glyph.Strokes:=Paths; ResultIndex:=Min(First,High(Paths)); PrepareGlyphTiming(Glyph); Result:=True;
 end;
 
 function MoveSelectedStrokes(Glyph: TWritingGlyph; const Indices: TArray<Integer>;

@@ -155,6 +155,14 @@ type
     Value   : LPCWSTR; // AviUtl2が管理する現在の文字列。
   end;
 
+  // SDK v2.1.17の複数行テキスト。Valueはエスケープ前のUnicode文字列。
+  PFILTER_ITEM_TEXT = ^TFILTER_ITEM_TEXT;
+  TFILTER_ITEM_TEXT = record
+    ItemType: LPCWSTR; // SDK項目種別の固定値 `text`。
+    Name    : LPCWSTR; // GUI表示名兼、設定取得時の項目識別名。
+    Value   : LPCWSTR; // ホスト所有。フィルタ処理の呼出し内で複製する。
+  end;
+
   // AviUtl2が現在値と範囲を管理する数値トラック項目。
   PFILTER_ITEM_TRACK = ^TFILTER_ITEM_TRACK;
   TFILTER_ITEM_TRACK = record

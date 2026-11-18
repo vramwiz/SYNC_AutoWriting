@@ -17,10 +17,12 @@ implementation
 uses Winapi.Windows, Winapi.Messages, System.SysUtils, System.Classes, System.Types, System.Math, System.UITypes,
   System.Generics.Collections,
   Vcl.Forms, Vcl.Controls, Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.ComCtrls,
-  Vcl.Graphics, Vcl.Dialogs, Vcl.Samples.Spin, Vcl.Menus, Vcl.ImgList, Vcl.NumberBox, AutoWriting_Fonts,
+  Vcl.Graphics, Vcl.Dialogs, Vcl.Samples.Spin, Vcl.Menus, Vcl.ImgList, Vcl.NumberBox,
+  Vcl.Themes, Vcl.Styles, AutoWriting_Fonts,
   AutoWriting_Renderer, AutoWriting_Inference, AutoWriting_Learning, AutoWriting_Editing, AutoWriting_Vertices;
 
 type
+  TDarkControlAccess = class(TControl);
   TWritingStrokeListBox = class(TListBox)
   private
     FDropIndex: Integer;
@@ -123,6 +125,10 @@ type
     procedure CloseSettings(Sender: TObject; var CanClose: Boolean);
     procedure PageChanged(Sender: TObject);
     procedure RestartClick(Sender: TObject);
+    procedure FormShown(Sender: TObject);
+    procedure MonitorDpiChanged(Sender: TObject; OldDPI,NewDPI: Integer);
+    procedure FitToWorkArea;
+    function UiPx(Value: Integer): Integer;
     procedure ReadControls;
     procedure Rebuild;
     procedure UpdateStrokeList;
@@ -139,10 +145,15 @@ type
   end;
 
 const
+  UI_BACKGROUND = $202020;
+  UI_SURFACE = $282828;
+  UI_TEXT = $ECECEC;
+  UI_SELECTION = $765134;
   KIND_NAMES: array[TCharacterKind] of string = ('漢字','ひらがな','カタカナ','数字','英字','記号');
   STROKE_COLORS: array[0..9] of TColor = ($4848D6,$CE8742,$74A153,$B667B1,$C2B13C,$6796E2,$C3765C,$9B69CB,$419CA2,$82954C);
   EA_SPLIT=1; EA_JOIN=2; EA_REVERSE=3; EA_UP=4; EA_DOWN=5;
   EA_UNDO=6; EA_REDO=7; EA_RESET=8; EA_PLAY=9; EA_SELECTALL=10; EA_REVERSEPOINT=11; EA_VERTEX=12;
+  EA_DELETEVERTEX=13; EA_DELETESTROKES=14;
 
 constructor TWritingStrokeListBox.Create(AOwner: TComponent);
 begin inherited; FDropIndex:=-1 end;
@@ -217,6 +228,7 @@ var Bitmap: TBitmap; I: Integer;
   begin
     AddAction(Menu,'選択した画を結合',EA_JOIN,Ord('J'),[ssCtrl]);
     if Menu<>FEditorMenu then AddAction(Menu,'描画方向を反転',EA_REVERSE,Ord('R'),[ssCtrl]);
+    AddAction(Menu,'選択した画を削除',EA_DELETESTROKES,0,[]);
     AddAction(Menu,'上へ移動',EA_UP,VK_UP,[ssAlt]); AddAction(Menu,'下へ移動',EA_DOWN,VK_DOWN,[ssAlt]);
     AddAction(Menu,'-',0,0,[]);
     AddAction(Menu,'元に戻す',EA_UNDO,Ord('Z'),[ssCtrl]); AddAction(Menu,'やり直す',EA_REDO,Ord('Y'),[ssCtrl]);
@@ -243,6 +255,7 @@ begin
   AddAction(FEditorMenu,'ここで分割',EA_SPLIT,Ord('K'),[ssCtrl]);
   AddAction(FEditorMenu,'この画の描画方向を反転',EA_REVERSEPOINT,Ord('R'),[ssCtrl]);
   AddAction(FEditorMenu,'頂点を作成',EA_VERTEX,Ord('I'),[ssCtrl]);
+  AddAction(FEditorMenu,'この頂点を削除',EA_DELETEVERTEX,0,[]);
   FChoosePointItem:=AddAction(FEditorMenu,'重なる点・線を選び直す',0,0,[]);
   AddAction(FEditorMenu,'-',0,0,[]); CommonActions(FEditorMenu);
   FStrokeMenu:=TPopupMenu.Create(Self); CommonActions(FStrokeMenu);
@@ -360,6 +373,9 @@ begin
     EA_REVERSE,EA_UP,EA_DOWN: Result:=FStrokes.SelCount>0;
     EA_REVERSEPOINT: Result:=(FSelectedHit.Stroke>=0) and (FSelectedHit.Stroke<Length(FCurrent.Strokes));
     EA_VERTEX: Result:=(FSelectedHit.Stroke>=0) and (FSelectedPoint<0);
+    EA_DELETEVERTEX: if (FSelectedHit.Stroke>=0) and (FSelectedHit.Stroke<Length(FCurrent.Strokes)) and
+      (FSelectedPoint>=0) then Result:=Length(EditingVertices(FCurrent.Strokes[FSelectedHit.Stroke]))>2;
+    EA_DELETESTROKES: Result:=FStrokes.SelCount>0;
     EA_UNDO: Result:=FUndo.Count>0;
     EA_REDO: Result:=FRedo.Count>0;
     EA_RESET,EA_PLAY,EA_SELECTALL: Result:=True;
@@ -406,6 +422,15 @@ begin
       if not JoinSelectedStrokes(FCurrent,Indices,Index) then Exit;
       After:=[Index];
     end;
+    EA_DELETEVERTEX: begin
+      Index:=FSelectedHit.Stroke;
+      if not DeletePathVertex(FCurrent.Strokes[Index],FSelectedPoint) then Exit;
+      PrepareGlyphTiming(FCurrent); After:=[Index];
+    end;
+    EA_DELETESTROKES: begin
+      if not DeleteSelectedStrokes(FCurrent,Indices,Index) then Exit;
+      After:=nil; if Index>=0 then After:=[Index];
+    end;
     EA_REVERSE: begin
       for I in Indices do ReverseGlyphStroke(FCurrent,I); After:=Indices;
       if (Length(Indices)=1) and (KeepHit.Stroke=Indices[0]) then
@@ -433,13 +458,33 @@ end;
 constructor TWritingSettingsForm.CreateForSettings(const S: TWritingSettings);
 var Bottom,LeftPanel,RightPanel,HelpPanel: TPanel; Scroll: TScrollBox;
   L: TLabel; B: TButton; K: TCharacterKind; P: TPenKind; Y: Integer;
+  procedure ApplyPalette(Control: TControl);
+  var I: Integer;
+  begin
+    // ネイティブ操作部品の描画はスタイルに任せ、背景は一貫した濃いグレーにする。
+    if (Control is TCustomForm) or (Control is TPanel) or (Control is TScrollBox) or
+      (Control is TTabSheet) or (Control is TMemo) or (Control is TCustomListBox) then
+    begin
+      Control.StyleElements:=Control.StyleElements-[seClient];
+      TDarkControlAccess(Control).Color:=UI_BACKGROUND;
+      if (Control is TMemo) or (Control is TCustomListBox) then
+        TDarkControlAccess(Control).Color:=UI_SURFACE;
+    end;
+    if Control is TPanel then TPanel(Control).ParentBackground:=False;
+    if Control is TWinControl then
+      for I:=0 to TWinControl(Control).ControlCount-1 do ApplyPalette(TWinControl(Control).Controls[I]);
+  end;
 begin
   inherited CreateNew(nil); FSettings:=S; FUpdating:=True;
+  // 座標を96 DPIで構築してから全体を一度だけ拡大する。CreateNewにはDFMの自動拡大がない。
+  Scaled:=False; AutoScroll:=False; Font.PixelsPerInch:=96;
+  StyleName:='Windows Modern Dark'; Color:=UI_BACKGROUND; Font.Color:=UI_TEXT;
   Caption:='自動筆記 — SYNC_AutoWriting v'+AW_VERSION;
   Position:=poScreenCenter; ClientWidth:=1120; ClientHeight:=790;
   Constraints.MinWidth:=940; Constraints.MinHeight:=700;
   Font.Name:='Yu Gothic UI'; Font.Size:=10; KeyPreview:=True; OnKeyDown:=FormKey;
   OnCloseQuery:=CloseSettings;
+  OnShow:=FormShown; OnAfterMonitorDpiChanged:=MonitorDpiChanged;
   FDragPoint:=-1; FSelectedPoint:=-1; FSelectedHit.Stroke:=-1;
   FPreview:=TWritingRenderer.Create; FSingle:=TWritingRenderer.Create; FEditEngine:=TWritingFontEngine.Create;
   FUndo:=TList<TGlyphEditState>.Create; FRedo:=TList<TGlyphEditState>.Create;
@@ -515,8 +560,32 @@ begin
   FEditPaint.OnMouseDown:=PathMouseDown; FEditPaint.OnMouseMove:=PathMouseMove; FEditPaint.OnMouseUp:=PathMouseUp;
   FEditPaint.OnContextPopup:=PathContext; CreateEditorMenus;
   FTimer:=TTimer.Create(Self); FTimer.Interval:=33; FTimer.OnTimer:=Tick;
+  ApplyPalette(Self);
+  Scaled:=True; ScaleForCurrentDPI;
+  ClientWidth:=UiPx(1120); ClientHeight:=UiPx(790); FitToWorkArea;
   FUpdating:=False; Rebuild;
 end;
+
+function TWritingSettingsForm.UiPx(Value: Integer): Integer;
+begin Result:=MulDiv(Value,CurrentPPI,96) end;
+
+procedure TWritingSettingsForm.FitToWorkArea;
+var Area: TRect; W,H: Integer;
+begin
+  Area:=Monitor.WorkareaRect;
+  // 高DPIで最小サイズが画面を超えても、下部の操作・状態表示を画面内へ収める。
+  Constraints.MinWidth:=Min(UiPx(940),Area.Width);
+  Constraints.MinHeight:=Min(UiPx(700),Area.Height);
+  if WindowState<>wsNormal then Exit;
+  W:=Min(Width,Area.Width); H:=Min(Height,Area.Height);
+  SetBounds(EnsureRange(Left,Area.Left,Area.Right-W),EnsureRange(Top,Area.Top,Area.Bottom-H),W,H);
+end;
+
+procedure TWritingSettingsForm.FormShown(Sender: TObject);
+begin FitToWorkArea end;
+
+procedure TWritingSettingsForm.MonitorDpiChanged(Sender: TObject; OldDPI,NewDPI: Integer);
+begin FitToWorkArea end;
 
 destructor TWritingSettingsForm.Destroy;
 begin
@@ -597,7 +666,7 @@ begin
       Row:=FDisplayBitmap.ScanLine[Y];
       for X:=0 to W-1 do
       begin
-        I:=Y*W+X; A:=Pixels[I].A; BG:=250; if ((X div 20+Y div 20) mod 2)=0 then BG:=240;
+        I:=Y*W+X; A:=Pixels[I].A; BG:=40; if ((X div 20+Y div 20) mod 2)=0 then BG:=32;
         Row[X*4]:=(Pixels[I].B*A+BG*(255-A)+127) div 255;
         Row[X*4+1]:=(Pixels[I].G*A+BG*(255-A)+127) div 255;
         Row[X*4+2]:=(Pixels[I].R*A+BG*(255-A)+127) div 255; Row[X*4+3]:=255;
@@ -667,6 +736,9 @@ begin
       end
     else if ssAlt in Shift then
       case Key of VK_UP: Action:=EA_UP; VK_DOWN: Action:=EA_DOWN end;
+    if (Key=VK_DELETE) and (Shift=[]) then
+      if (ActiveControl=FEditPaint) and (FSelectedPoint>=0) then Action:=EA_DELETEVERTEX
+      else if ActiveControl=FStrokes then Action:=EA_DELETESTROKES;
     if Action<>0 then begin ExecuteEditAction(Action); Key:=0; Exit end;
   end;
   if Key<>VK_SPACE then Exit;
@@ -736,7 +808,7 @@ begin
   if FSelectedHit.Stroke>=0 then Text:=Text+Format(' 選択位置: %d画目。右クリック→頂点作成／分割。',[FSelectedHit.Stroke+1])
   else Text:=Text+' 線を右クリック→頂点作成／分割。重なりは色付き候補から選択。';
   Text:=Text+Format(' 選択中: %d画。太線＝選択、●始点 → □終点。',[FStrokes.SelCount]);
-  Text:=Text+' 画一覧はCtrl/Shiftで複数選択→右クリックで結合。';
+  Text:=Text+' 頂点を選択→ドラッグで移動・右クリックで削除。画一覧は複数選択→右クリックで結合／削除。';
   FEditorStatus.Caption:=Text; FEditorStatus.Hint:=Text;
 end;
 
@@ -826,7 +898,7 @@ var C: TCanvas; I,X,Y: Integer; R: TRect; S: TWritingSettings;
   begin
     Result:=STROKE_COLORS[Index mod 10]; if Active then Exit;
     Color:=ColorToRGB(Result);
-    Result:=RGB((GetRValue(Color)+510) div 3,(GetGValue(Color)+510) div 3,(GetBValue(Color)+510) div 3);
+    Result:=RGB((GetRValue(Color)+64) div 3,(GetGValue(Color)+64) div 3,(GetBValue(Color)+64) div 3);
   end;
   procedure Trace(Index: Integer; Color: TColor; Width: Integer);
   var J: Integer; P: TPointF;
@@ -852,11 +924,12 @@ var C: TCanvas; I,X,Y: Integer; R: TRect; S: TWritingSettings;
   procedure LabelAt(const P: TPointF; const Text: string; Color: TColor);
   var X,Y,W,H: Integer;
   begin
-    C.Font.Size:=10; C.Font.Style:=[fsBold]; C.Font.Color:=Color;
+    C.Font.Size:=10; C.Font.Style:=[fsBold];
+    C.Font.Color:=RGB((GetRValue(Color)+255) div 2,(GetGValue(Color)+255) div 2,(GetBValue(Color)+255) div 2);
     W:=C.TextWidth(Text)+8; H:=C.TextHeight(Text)+4;
     X:=EnsureRange(Round(P.X),2,Max(2,FEditPaint.Width-W-2));
     Y:=EnsureRange(Round(P.Y),2,Max(2,FEditPaint.Height-H-2));
-    C.Brush.Style:=bsSolid; C.Brush.Color:=clWhite; C.Pen.Color:=clWhite; C.Pen.Width:=1;
+    C.Brush.Style:=bsSolid; C.Brush.Color:=UI_SURFACE; C.Pen.Color:=UI_SURFACE; C.Pen.Width:=1;
     C.RoundRect(X,Y,X+W,Y+H,5,5); C.TextOut(X+4,Y+2,Text);
   end;
   procedure ArrowAt(Index: Integer; AtDistance,Size: Double);
@@ -908,7 +981,7 @@ var C: TCanvas; I,X,Y: Integer; R: TRect; S: TWritingSettings;
   end;
 begin
   C:=FEditPaint.Canvas; C.Brush.Style:=bsSolid; C.Pen.Style:=psSolid;
-  C.Brush.Color:=$FAFAFA; C.FillRect(FEditPaint.ClientRect); if FCurrent=nil then Exit;
+  C.Brush.Color:=UI_BACKGROUND; C.FillRect(FEditPaint.ClientRect); if FCurrent=nil then Exit;
   if FSinglePlaying then
   begin
     S:=FSettings; S.Text:=FCurrent.Character; S.X:=0; S.Y:=0; S.Transparency:=0; S.Scale:=100;
@@ -932,7 +1005,7 @@ begin
     begin
       Row:=Bitmap.ScanLine[Y];
       for X:=0 to FCurrent.Width-1 do
-      begin A:=255-FCurrent.Mask[Y*FCurrent.Width+X] div 5;
+      begin A:=32+FCurrent.Mask[Y*FCurrent.Width+X] div 4;
         Row[X*4]:=A; Row[X*4+1]:=A; Row[X*4+2]:=A; Row[X*4+3]:=255 end;
     end;
     R:=Rect(Round(FViewX),Round(FViewY),Round(FViewX+FCurrent.Width*FViewScale),Round(FViewY+FCurrent.Height*FViewScale));
@@ -960,7 +1033,7 @@ begin
     C.Pen.Color:=clWhite; C.Pen.Width:=4; C.Brush.Style:=bsSolid;
     C.Brush.Color:=STROKE_COLORS[FSelectedHit.Stroke mod 10]; C.Ellipse(X-12,Y-12,X+13,Y+13);
     C.Pen.Color:=clBlack; C.Pen.Width:=2; C.Brush.Style:=bsClear; C.Ellipse(X-12,Y-12,X+13,Y+13);
-    C.Font.Size:=11; C.Font.Color:=clBlack;
+    C.Font.Size:=11; C.Font.Color:=UI_TEXT;
     if FSelectedPoint<0 then C.TextOut(X+16,Y-19,Format('%d画目・線上',[FSelectedHit.Stroke+1]))
     else C.TextOut(X+16,Y-19,Format('%d画目・頂点',[FSelectedHit.Stroke+1]));
   end;
@@ -974,7 +1047,7 @@ begin
   if FViewScale<=0 then Exit;
   FEditPaint.SetFocus; Hit.Stroke:=-1; J:=-1;
   if (FSelectedHit.Stroke>=0) and
-    (Hypot(FViewX+FSelectedHit.Point.X*FViewScale-X,FViewY+FSelectedHit.Point.Y*FViewScale-Y)<=10) and
+    (Hypot(FViewX+FSelectedHit.Point.X*FViewScale-X,FViewY+FSelectedHit.Point.Y*FViewScale-Y)<=16) and
     not (ssAlt in Shift) then
   begin
     Hit:=FSelectedHit; J:=FSelectedPoint;
@@ -1033,33 +1106,35 @@ end;
 procedure TWritingSettingsForm.DrawCharacter(Control: TWinControl; Index: Integer; Rect: TRect; State: TOwnerDrawState);
 var C: TCanvas; G: TWritingGlyph;
 begin
-  C:=FChars.Canvas; C.FillRect(Rect); C.Font.Size:=24; C.Font.Name:=FSettings.FontName;
-  C.TextOut(Rect.Left+6,Rect.Top+1,FChars.Items[Index]); C.Font.Name:=Font.Name; C.Font.Size:=9;
+  C:=FChars.Canvas; C.Brush.Color:=UI_SURFACE;
+  if odSelected in State then C.Brush.Color:=UI_SELECTION;
+  C.FillRect(Rect); C.Font:=FChars.Font; C.Font.Color:=UI_TEXT; C.Font.Size:=24; C.Font.Name:=FSettings.FontName;
+  C.TextOut(Rect.Left+UiPx(6),Rect.Top+UiPx(1),FChars.Items[Index]); C.Font.Name:=Font.Name; C.Font.Size:=9;
   G:=FEditEngine.Glyph(FChars.Items[Index]);
-  if G.Missing then C.TextOut(Rect.Left+61,Rect.Top+17,'未収録')
-  else if G.Learned then C.TextOut(Rect.Left+61,Rect.Top+17,'学習済')
-  else C.TextOut(Rect.Left+61,Rect.Top+17,'推定');
+  if G.Missing then C.TextOut(Rect.Left+UiPx(61),Rect.Top+UiPx(17),'未収録')
+  else if G.Learned then C.TextOut(Rect.Left+UiPx(61),Rect.Top+UiPx(17),'学習済')
+  else C.TextOut(Rect.Left+UiPx(61),Rect.Top+UiPx(17),'推定');
 end;
 
 procedure TWritingSettingsForm.DrawStroke(Control: TWinControl; Index: Integer; Rect: TRect; State: TOwnerDrawState);
 var C: TCanvas; J: Integer; P: TPointF; Fit: Double;
 begin
-  C:=FStrokes.Canvas;
-  if odSelected in State then begin C.Brush.Color:=clHighlight; C.Font.Color:=clHighlightText end
-  else begin C.Brush.Color:=clWindow; C.Font.Color:=clWindowText end;
+  C:=FStrokes.Canvas; C.Font:=FStrokes.Font;
+  C.Font.Color:=UI_TEXT;
+  if odSelected in State then C.Brush.Color:=UI_SELECTION else C.Brush.Color:=UI_SURFACE;
   C.FillRect(Rect); if (FCurrent=nil) or (Index>=Length(FCurrent.Strokes)) then Exit;
-  C.Pen.Color:=clWhite; C.Pen.Width:=2; C.Brush.Color:=STROKE_COLORS[Index mod 10];
-  C.Ellipse(Rect.Left+8,Rect.Top+14,Rect.Left+29,Rect.Top+35);
-  Fit:=32/Max(1,Max(FCurrent.Width,FCurrent.Height));
-  C.Pen.Color:=STROKE_COLORS[Index mod 10]; C.Pen.Width:=2;
+  C.Pen.Color:=clWhite; C.Pen.Width:=UiPx(2); C.Brush.Color:=STROKE_COLORS[Index mod 10];
+  C.Ellipse(Rect.Left+UiPx(8),Rect.Top+UiPx(14),Rect.Left+UiPx(29),Rect.Top+UiPx(35));
+  Fit:=UiPx(32)/Max(1,Max(FCurrent.Width,FCurrent.Height));
+  C.Pen.Color:=STROKE_COLORS[Index mod 10]; C.Pen.Width:=UiPx(2);
   for J:=0 to High(FCurrent.Strokes[Index].Points) do
   begin
     P:=FCurrent.Strokes[Index].Points[J];
-    if J=0 then C.MoveTo(Rect.Left+42+Round(P.X*Fit),Rect.Top+8+Round(P.Y*Fit))
-    else C.LineTo(Rect.Left+42+Round(P.X*Fit),Rect.Top+8+Round(P.Y*Fit));
+    if J=0 then C.MoveTo(Rect.Left+UiPx(42)+Round(P.X*Fit),Rect.Top+UiPx(8)+Round(P.Y*Fit))
+    else C.LineTo(Rect.Left+UiPx(42)+Round(P.X*Fit),Rect.Top+UiPx(8)+Round(P.Y*Fit));
   end;
-  C.Brush.Style:=bsClear; C.Font.Size:=10; C.TextOut(Rect.Left+88,Rect.Top+14,IntToStr(Index+1)+' 画');
-  if FCurrent.Strokes[Index].Reversed then C.TextOut(Rect.Left+148,Rect.Top+14,'反転');
+  C.Brush.Style:=bsClear; C.Font.Size:=10; C.TextOut(Rect.Left+UiPx(88),Rect.Top+UiPx(14),IntToStr(Index+1)+' 画');
+  if FCurrent.Strokes[Index].Reversed then C.TextOut(Rect.Left+UiPx(148),Rect.Top+UiPx(14),'反転');
   C.Brush.Style:=bsSolid;
 end;
 
@@ -1072,11 +1147,18 @@ begin
 end;
 
 function EditWritingSettings(var Settings: TWritingSettings): Boolean;
-var Form: TWritingSettingsForm;
+var Form: TWritingSettingsForm; PreviousStyle: string; PreviousDefault: Boolean;
 begin
-  Form:=TWritingSettingsForm.CreateForSettings(Settings);
-  try Form.ShowModal; Settings:=Form.FSettings; Result:=True
-  finally Form.Free end;
+  // スタイルを使用する期間はこのモーダル呼出し内。ホストの外観設定を変更しない。
+  PreviousStyle:=TStyleManager.ActiveStyle.Name; PreviousDefault:=TStyleManager.UseSystemStyleAsDefault;
+  try
+    TStyleManager.UseSystemStyleAsDefault:=True; TStyleManager.SetStyle('Windows Modern Dark');
+    Form:=TWritingSettingsForm.CreateForSettings(Settings);
+    try Form.ShowModal; Settings:=Form.FSettings; Result:=True
+    finally Form.Free end;
+  finally
+    TStyleManager.SetStyle(PreviousStyle); TStyleManager.UseSystemStyleAsDefault:=PreviousDefault;
+  end;
 end;
 
 end.

@@ -1,4 +1,4 @@
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
         <ProjectGuid>{4E7C4714-22DF-4FF6-B0B7-66A4F2A7F54A}</ProjectGuid>
         <ProjectVersion>20.4</ProjectVersion>
@@ -44,6 +44,7 @@
         <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;Winapi;Vcl;$(DCC_Namespace)</DCC_Namespace>
         <DCC_UnitSearchPath>.\Source\Common;.\Source\Lib;.\Source\Lib\FilterTable;.\Source\Plugin\Filter;.\Source\UI;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
         <SanitizedProjectName>SYNC_AutoWriting</SanitizedProjectName>
+        <Custom_Styles>&quot;Windows Modern Dark|VCLSTYLE|$(BDSCOMMONDIR)\Styles\WindowsModernDark.vsf&quot;</Custom_Styles>
         <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
         <VerInfo_MajorVer>1</VerInfo_MajorVer>
         <VerInfo_MinorVer>0</VerInfo_MinorVer>
@@ -93,7 +94,7 @@
         <Manifest_File>(なし)</Manifest_File>
         <AppDPIAwarenessMode>none</AppDPIAwarenessMode>
         <DCC_ExeOutput>C:\ProgramData\aviutl2\Plugin\SYNC_AutoWriting\</DCC_ExeOutput>
-        <Debugger_HostApplication>D:\aviutl2_v2.1.16\aviutl2.exe</Debugger_HostApplication>
+        <Debugger_HostApplication>D:\aviutl2_v2.1.17\aviutl2.exe</Debugger_HostApplication>
     </PropertyGroup>
     <ItemGroup>
         <DelphiCompile Include="$(MainSource)">
@@ -101,17 +102,17 @@
         </DelphiCompile>
         <DCCReference Include="Source\Lib\AviUtl2FilterTypes.pas"/>
         <DCCReference Include="Source\Lib\FilterTable\PluginFilterTable.pas"/>
-        <DCCReference Include="Source\Common\AutoWriting_Fonts.pas"/>
-        <DCCReference Include="Source\Common\AutoWriting_Inference.pas"/>
-        <DCCReference Include="Source\Common\AutoWriting_Editing.pas"/>
-        <DCCReference Include="Source\Common\AutoWriting_Learning.pas"/>
-        <DCCReference Include="Source\Common\AutoWriting_Renderer.pas"/>
-        <DCCReference Include="Source\Common\AutoWriting_Reveal.pas"/>
         <DCCReference Include="Source\Common\AutoWriting_Types.pas"/>
         <DCCReference Include="Source\Common\AutoWriting_Vertices.pas"/>
         <DCCReference Include="Source\Common\AutoWriting_Branches.pas"/>
-        <DCCReference Include="Source\Plugin\Filter\AutoWriting_Parameters.pas"/>
+        <DCCReference Include="Source\Common\AutoWriting_Reveal.pas"/>
+        <DCCReference Include="Source\Common\AutoWriting_Inference.pas"/>
+        <DCCReference Include="Source\Common\AutoWriting_Editing.pas"/>
+        <DCCReference Include="Source\Common\AutoWriting_Learning.pas"/>
+        <DCCReference Include="Source\Common\AutoWriting_Fonts.pas"/>
+        <DCCReference Include="Source\Common\AutoWriting_Renderer.pas"/>
         <DCCReference Include="Source\UI\AutoWriting_SettingsForm.pas"/>
+        <DCCReference Include="Source\Plugin\Filter\AutoWriting_Parameters.pas"/>
         <DCCReference Include="Source\Plugin\Filter\SYNC_AutoWriting_FilterPlugin.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
