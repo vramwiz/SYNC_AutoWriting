@@ -13,7 +13,7 @@ video.height=1080
 video.rate=30
 video.scale=1
 audio.rate=44100
-cursor.frame=221
+cursor.frame=203
 cursor.layer=2
 preview.frame=0
 display.frame=0
@@ -68,7 +68,7 @@ frame=0,1559
 effect.name=フィルタオブジェクト
 [1.1]
 effect.name=自動筆記
-表示文字列=ABCDEFGHIJ\nKLMNOPQRS\nTUVWXYZ\n
+表示文字列=漢字\n
 X座標=0.0
 Y座標=0.0
 拡大率=320.5

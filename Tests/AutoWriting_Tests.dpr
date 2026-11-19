@@ -3,7 +3,7 @@
 // Copyright (c) 2026 VRAMの魔術師
 // SPDX-License-Identifier: GPL-3.0-only
 // 本番AUF2を実際に読み込み、フレーム描画・SDK登録・元フォント形状を検査する。
-// 学習IOは一意なIDまたは未使用の私用文字を使い、既存のユーザーデータへ書き込まない。
+// 学習IOは一意なIDまたは未学習の文字を使い、既存のユーザーデータへ書き込まない。
 
 {$APPTYPE CONSOLE}
 {$R+}{$Q+}
@@ -77,6 +77,7 @@ var
   EditingDragCapture: HWND;
   EditingDragPosition: LPARAM;
   EditingBeforeDragHash: string;
+  TraceGuides: array[0..1] of TArray<TPointF>;
   BranchTimer: UINT_PTR;
   BranchStage,BranchTicks: Integer;
   BranchFile,BranchError,BranchFontID,BranchCharacter,BranchBeforeHash: string;
@@ -851,11 +852,19 @@ end;
 procedure CaptureDialog(const FileName: string);
 begin CaptureWindow(DialogHandle,FileName) end;
 
+procedure PressKey(Target: HWND; Key: Word; RepeatDown: Boolean=False);
+begin
+  SendMessage(Target,WM_KEYDOWN,Key,0);
+  if RepeatDown then SendMessage(Target,WM_KEYDOWN,Key,1 shl 30);
+  SendMessage(Target,WM_KEYUP,Key,0);
+end;
+
 procedure CtrlKey(Key: Word);
 var Before,Keys: TKeyboardState;
 begin
   GetKeyboardState(Before); Keys:=Before; Keys[VK_CONTROL]:=$80;
-  try SetKeyboardState(Keys); SendMessage(DialogHandle,WM_KEYDOWN,Key,0)
+  try
+    SetKeyboardState(Keys); PressKey(DialogHandle,Key);
   finally SetKeyboardState(Before) end;
 end;
 
@@ -1072,6 +1081,37 @@ begin
   SendMessage(EditorSurface,WM_LBUTTONUP,0,Position);
 end;
 
+procedure DrawNativeTrace(const Guide: TArray<TPointF>);
+var R: TRect; Scale,X,Y: Double; I: Integer; Position: LPARAM;
+begin
+  GetClientRect(EditorSurface,R);
+  Scale:=Min((R.Width-100)/EditingGlyphWidth,(R.Height-100)/EditingGlyphHeight);
+  X:=(R.Width-EditingGlyphWidth*Scale)/2; Y:=(R.Height-EditingGlyphHeight*Scale)/2;
+  for I:=0 to High(Guide) do
+  begin
+    Position:=(Round(X+Guide[I].X*Scale) and $FFFF) or ((Round(Y+Guide[I].Y*Scale) and $FFFF) shl 16);
+    if I=0 then SendMessage(EditorSurface,WM_LBUTTONDOWN,MK_LBUTTON,Position)
+    else SendMessage(EditorSurface,WM_MOUSEMOVE,MK_LBUTTON,Position);
+    if I=High(Guide) then SendMessage(EditorSurface,WM_LBUTTONUP,0,Position);
+  end;
+end;
+
+procedure CheckNativeTrace;
+var Glyph: TWritingGlyph; Warning: string;
+begin
+  Glyph:=TWritingGlyph.Create;
+  try
+    Glyph.FontID:=EditingFontID; Glyph.Character:=EditingCharacter;
+    Glyph.Width:=EditingGlyphWidth; Glyph.Height:=EditingGlyphHeight;
+    Check(LoadGlyphLearning(Glyph,Warning) and (Warning=''),'Trace did not persist through the learning API');
+    Check(Length(Glyph.Strokes)=2,'Trace did not replace the original strokes');
+    with Glyph.Strokes[0] do
+      Check(Points[0].Y-Points[High(Points)].Y>Glyph.Height/2,'Trace lost upward direction of the first stroke');
+    with Glyph.Strokes[1] do
+      Check(Points[0].X-Points[High(Points)].X>Glyph.Width/2,'Trace lost leftward direction of the second stroke');
+  finally Glyph.Free end;
+end;
+
 procedure NotifyStrokeSelection;
 begin
   SendMessage(GetParent(EditingStrokeList),WM_COMMAND,
@@ -1161,11 +1201,11 @@ begin
     if EditingTicks>50 then raise Exception.Create('Native editing test timed out');
     if DialogHandle=0 then Exit;
     case EditingStage of
-      0: begin
+      0,40: begin
         UIStage:=0; EnumChildWindows(DialogHandle,@FindUIChild,0);
         SendMessage(PageHandle,TCM_SETCURSEL,1,0);
         FillChar(Header,SizeOf(Header),0); Header.hwndFrom:=PageHandle; Header.code:=TCN_SELCHANGE;
-        SendMessage(GetParent(PageHandle),WM_NOTIFY,0,LPARAM(@Header)); EditingStage:=1;
+        SendMessage(GetParent(PageHandle),WM_NOTIFY,0,LPARAM(@Header)); Inc(EditingStage);
       end;
       1: begin
         UIStage:=3; EnumChildWindows(DialogHandle,@FindUIChild,0);
@@ -1279,6 +1319,46 @@ begin
         Check(not TFile.Exists(EditingFile),'Native drag test did not clean up learning');
         KillTimer(0,EditingTimer); EditingTimer:=0; EditingStage:=10; PostMessage(DialogHandle,WM_CLOSE,0,0);
       end;
+      41: begin
+        UIStage:=3; EnumChildWindows(DialogHandle,@FindUIChild,0);
+        Check((EditorSurface<>0) and (EditingStrokeList<>0),'Trace editor controls missing');
+        EditingStage:=42; PostContext(EditorSurface,Point(30,30));
+      end;
+      42: begin
+        Menu:=OpenPopupHandle;
+        CaptureWindow(PopupWindow,'ui_trace_menu.png');
+        EditingStage:=43; ChoosePopupItem(GetMenuItemCount(Menu)-1);
+      end;
+      43: begin
+        Check(SendMessage(EditingStrokeList,LB_GETCOUNT,0,0)=0,'Context menu did not start a new trace');
+        DrawNativeTrace(TraceGuides[0]);
+        DrawNativeTrace([PointF(-35,-35)]);
+        Check(SendMessage(EditingStrokeList,LB_GETCOUNT,0,0)=1,'Invalid gesture changed the draft');
+        DrawNativeTrace(TraceGuides[1]);
+        Check(SendMessage(EditingStrokeList,LB_GETCOUNT,0,0)=2,'Drags did not create two draft strokes');
+        Check(not TFile.Exists(EditingFile),'Draft was saved before finishing');
+        CaptureDialog('ui_trace_draft.png');
+        PressKey(EditorSurface,VK_F2); CheckNativeTrace;
+        CtrlKey(Ord('Z'));
+        Check(not TFile.Exists(EditingFile),'One undo did not restore the previous learning state');
+        CtrlKey(Ord('Y')); CheckNativeTrace;
+        CtrlKey(Ord('Z'));
+        Winapi.Windows.SetFocus(EditingStrokeList);
+        PressKey(EditingStrokeList,VK_F2,True); DrawNativeTrace(TraceGuides[0]);
+        Check(SendMessage(EditingStrokeList,LB_GETCOUNT,0,0)=1,'Held shortcut toggled trace twice');
+        SendMessage(DialogHandle,WM_KEYDOWN,VK_ESCAPE,0);
+        Check((SendMessage(EditingStrokeList,LB_GETCOUNT,0,0)=EditingInitialCount) and
+          not TFile.Exists(EditingFile),'Escape did not discard the draft');
+        PressKey(EditorSurface,VK_F2);
+        DrawNativeTrace(TraceGuides[0]); DrawNativeTrace(TraceGuides[1]);
+        EditingStage:=44; PostContext(EditorSurface,Point(30,30));
+      end;
+      44: begin
+        CheckNativeTrace;
+        CtrlKey(Ord('Z'));
+        Check(not TFile.Exists(EditingFile),'Undo after right-click commit left learning on disk');
+        KillTimer(0,EditingTimer); EditingTimer:=0; EditingStage:=45; PostMessage(DialogHandle,WM_CLOSE,0,0);
+      end;
     end;
   except
     on E: Exception do
@@ -1351,6 +1431,57 @@ begin
     Engine.Free;
     if (EditingFile<>'') and TFile.Exists(EditingFile) then TFile.Delete(EditingFile);
     if (Folder<>'') and not HadFolder and TDirectory.Exists(Folder) and (Length(TDirectory.GetFiles(Folder))=0) then
+      TDirectory.Delete(Folder,False);
+  end;
+end;
+
+procedure TestNativeStrokeTracing;
+const Fonts: array[0..2] of string = ('ＭＳ ゴシック','游明朝','メイリオ');
+var S: TWritingSettings; Engine: TWritingFontEngine; Glyph: TWritingGlyph;
+  Edit: TEDIT_SECTION; Stroke: TStroke; P,Top,Bottom,Left,Right: TPointF;
+  FontName,Folder,Candidate: string; HadFolder: Boolean;
+begin
+  S:=DefaultWritingSettings; S.Text:='十'; Engine:=TWritingFontEngine.Create;
+  Folder:=''; HadFolder:=True; EditingFile:='';
+  try
+    for FontName in Fonts do
+    begin
+      S.FontName:=FontName; Engine.Configure(S); Glyph:=Engine.Glyph(S.Text);
+      if Glyph.Missing or (Length(Glyph.Strokes)=0) then Continue;
+      Folder:=TPath.Combine(TPath.Combine(LearningDirectory,'Fonts'),Engine.FontID);
+      Candidate:=TPath.Combine(Folder,'5341.json');
+      if TFile.Exists(Candidate) then Continue;
+      EditingFile:=Candidate; HadFolder:=TDirectory.Exists(Folder); Break;
+    end;
+    Check(EditingFile<>'','No unlearned native tracing fixture');
+    EditingFontID:=Glyph.FontID; EditingCharacter:=S.Text; EditingInitialCount:=Length(Glyph.Strokes);
+    EditingGlyphWidth:=Glyph.Width; EditingGlyphHeight:=Glyph.Height;
+    Top:=PointF(0,Glyph.Height); Bottom:=PointF(0,-1); Left:=PointF(Glyph.Width,0); Right:=PointF(-1,0);
+    for Stroke in Glyph.Strokes do for P in Stroke.Points do
+    begin
+      if P.Y<Top.Y then Top:=P;
+      if P.Y>Bottom.Y then Bottom:=P;
+      if P.X<Left.X then Left:=P;
+      if P.X>Right.X then Right:=P;
+    end;
+    TraceGuides[0]:=[Bottom+PointF(5,0),PointF((Bottom.X+Top.X)/2+5,(Bottom.Y+Top.Y)/2),Top+PointF(5,0)];
+    TraceGuides[1]:=[Right+PointF(0,4),PointF((Right.X+Left.X)/2,(Right.Y+Left.Y)/2+4),Left+PointF(0,4)];
+    Configure(S); UIValues[0]:=UTF8String(DetailBacking); UIValues[1]:=UTF8String(TextBacking);
+    UIValues[2]:='万年筆'; UIValues[3]:='240'; UIValues[4]:='35'; UIValues[5]:='-100'; UIValues[6]:='-100';
+    UIValues[7]:='100'; UIValues[9]:='0'; Edit:=Default(TEDIT_SECTION);
+    Edit.GetObjectItemValue:=UIGet; Edit.SetObjectItemValue:=UISet;
+    DialogHandle:=0; PreviewSurface:=0; EditorSurface:=0; EditingStrokeList:=0;
+    EditingStage:=40; EditingTicks:=0; EditingError:='';
+    EditingTimer:=SetTimer(0,0,250,@EditingTick); Check(EditingTimer<>0,'Cannot start native trace timer');
+    try Button^.Callback2(@Edit,Pointer(1234),'自動筆記:2','設定')
+    finally if EditingTimer<>0 then KillTimer(0,EditingTimer) end;
+    Check(EditingError='','Native tracing failure: '+EditingError);
+    Check(EditingStage=45,'Native tracing test did not finish');
+    Writeln('PASS native trace context menu and F2, offset drags, cancel, learning and undo/redo');
+  finally
+    Engine.Free;
+    if (EditingFile<>'') and TFile.Exists(EditingFile) then TFile.Delete(EditingFile);
+    if (EditingFile<>'') and not HadFolder and TDirectory.Exists(Folder) and (Length(TDirectory.GetFiles(Folder))=0) then
       TDirectory.Delete(Folder,False);
   end;
 end;
@@ -1515,7 +1646,10 @@ begin
     OutputDirectory:=ExpandFileName(ParamStr(2)); ForceDirectories(OutputDirectory);
     UILayoutOnly:=(ParamCount>=3) and (ParamStr(3)='--layout-only');
     if not UILayoutOnly and not ((ParamCount>=3) and ((ParamStr(3)='--glyph-samples') or (ParamStr(3)='--demo-only'))) then
-    begin TestSettingsAndLearning; TestStrokeEditing; TestEditingVertices; TestEditRegressions(Check); TestOverlappingReveal; TestSelectedStrokeOperations; TestBranchAbsorption; TestFontCacheAndLayout end;
+    begin
+      TestSettingsAndLearning; TestStrokeEditing; TestEditingVertices; TestEditRegressions(Check);
+      TestTraceSnapping(Check); TestOverlappingReveal; TestSelectedStrokeOperations; TestBranchAbsorption; TestFontCacheAndLayout;
+    end;
     Module:=LoadLibrary(PChar(ExpandFileName(ParamStr(1))));
     Check(Module<>0,'Cannot load production AUF2: '+SysErrorMessage(GetLastError));
     @GetTable:=GetProcAddress(Module,'GetFilterPluginTable'); @Init:=GetProcAddress(Module,'InitializePlugin');
@@ -1541,7 +1675,7 @@ begin
       TestFinalFont; TestPenRendering(PenTests); TestHostMemoText; TestHostInkColor; TestProduction;
       Video.UserData:=Session; TestStrokeReferences(PenTests,OutputDirectory);
       if not ((ParamCount>=3) and (ParamStr(3)='--no-ui')) then
-      begin TestSettingsDialog; TestNativeStrokeEditing; TestNativeBranchJoin end;
+      begin TestSettingsDialog; TestNativeStrokeEditing; TestNativeBranchJoin; TestNativeStrokeTracing end;
     end;
     if (ParamCount>=3) and (ParamStr(3)='--demo') then begin Video.UserData:=Session; RenderDemo end;
     Writeln('ALL PASS: ',Tests,' checks');

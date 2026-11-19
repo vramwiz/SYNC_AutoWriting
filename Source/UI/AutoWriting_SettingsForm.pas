@@ -20,7 +20,7 @@ uses Winapi.Windows, Winapi.Messages, System.SysUtils, System.Classes, System.Ty
   Vcl.Graphics, Vcl.Dialogs, Vcl.Samples.Spin, Vcl.Menus, Vcl.ImgList, Vcl.NumberBox,
   Vcl.Themes, Vcl.Styles, AutoWriting_Fonts,
   AutoWriting_Renderer, AutoWriting_Inference, AutoWriting_Learning, AutoWriting_Editing, AutoWriting_Vertices,
-  AutoWriting_Preview, AutoWriting_FontCatalog;
+  AutoWriting_Preview, AutoWriting_FontCatalog, AutoWriting_ReferenceFit;
 
 type
   TDarkControlAccess = class(TControl);
@@ -38,8 +38,11 @@ type
   // 親タブの背景消去から独立した不透明描画面。次のフレームが完成するまで前回を保つ。
   TWritingPaintBox = class(TCustomControl)
   private
-    FOnPaint: TNotifyEvent;
+    FOnPaint,FOnCaptureLost: TNotifyEvent;
+    FButtonUp: Boolean;
     procedure WMEraseBkgnd(var Message: TWMEraseBkgnd); message WM_ERASEBKGND;
+    procedure WMLButtonUp(var Message: TWMLButtonUp); message WM_LBUTTONUP;
+    procedure WMCaptureChanged(var Message: TMessage); message WM_CAPTURECHANGED;
   protected
     procedure Paint; override;
   public
@@ -51,6 +54,7 @@ type
     property OnMouseMove;
     property OnMouseUp;
     property OnContextPopup;
+    property OnCaptureLost: TNotifyEvent read FOnCaptureLost write FOnCaptureLost;
   end;
   TWritingSettingsForm = class(TForm)
   private
@@ -94,6 +98,11 @@ type
     FDragBefore: TGlyphEditState;
     FUndo,FRedo: TList<TGlyphEditState>;
     FHistoryKey: string;
+    FTraceSource: TWritingGlyph;
+    FTraceGuide: TList<TPointF>;
+    FTraceStrokes: TArray<TStroke>;
+    FTracePointCount: Integer;
+    FTraceShortcutDown: Boolean;
     procedure Changed(Sender: TObject);
     procedure Tick(Sender: TObject);
     procedure PaintPreview(Sender: TObject);
@@ -103,6 +112,8 @@ type
     procedure FontChanged(Sender: TObject);
     procedure PickColor(Sender: TObject);
     procedure FormKey(Sender: TObject; var Key: Word; Shift: TShiftState);
+    procedure FormKeyUp(Sender: TObject; var Key: Word; Shift: TShiftState);
+    procedure FormDeactivated(Sender: TObject);
     procedure MenuAction(Sender: TObject);
     procedure MenuPopup(Sender: TObject);
     procedure PointChoice(Sender: TObject);
@@ -124,6 +135,12 @@ type
     procedure PathMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X,Y: Integer);
     procedure PathMouseMove(Sender: TObject; Shift: TShiftState; X,Y: Integer);
     procedure PathMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X,Y: Integer);
+    procedure StartTrace;
+    procedure EndTrace;
+    procedure FinishTrace;
+    procedure CaptureTracePoint(X,Y: Integer);
+    procedure AcceptTraceStroke;
+    procedure TraceCaptureLost(Sender: TObject);
     procedure DrawCharacter(Control: TWinControl; Index: Integer; Rect: TRect; State: TOwnerDrawState);
     procedure DrawStroke(Control: TWinControl; Index: Integer; Rect: TRect; State: TOwnerDrawState);
     procedure CloseSettings(Sender: TObject; var CanClose: Boolean);
@@ -160,6 +177,9 @@ const
   EA_SPLIT=1; EA_JOIN=2; EA_REVERSE=3; EA_UP=4; EA_DOWN=5;
   EA_UNDO=6; EA_REDO=7; EA_RESET=8; EA_PLAY=9; EA_SELECTALL=10; EA_REVERSEPOINT=11; EA_VERTEX=12;
   EA_DELETEVERTEX=13; EA_DELETESTROKES=14;
+  EA_TRACE=15;
+  TRACE_SHORTCUT=VK_F2;
+  MAX_TRACE_GUIDE_POINTS=4096;
 
 constructor TWritingStrokeListBox.Create(AOwner: TComponent);
 begin inherited; FDropIndex:=-1 end;
@@ -200,6 +220,20 @@ procedure TWritingPaintBox.WMEraseBkgnd(var Message: TWMEraseBkgnd);
 begin
   // フレーム全体はPaintが描く。WM_PAINTより先に画面を空白にしない。
   Message.Result:=1;
+end;
+
+procedure TWritingPaintBox.WMLButtonUp(var Message: TWMLButtonUp);
+begin
+  // VCLがMouseUpの通知より先に解放する通常のキャプチャは入力中断と区別する。
+  FButtonUp:=True;
+  try inherited
+  finally FButtonUp:=False end;
+end;
+
+procedure TWritingPaintBox.WMCaptureChanged(var Message: TMessage);
+begin
+  inherited;
+  if not FButtonUp and Assigned(FOnCaptureLost) then FOnCaptureLost(Self);
 end;
 
 procedure TWritingPaintBox.Paint;
@@ -264,6 +298,8 @@ begin
   AddAction(FEditorMenu,'この頂点を削除',EA_DELETEVERTEX,0,[]);
   FChoosePointItem:=AddAction(FEditorMenu,'重なる点・線を選び直す',0,0,[]);
   AddAction(FEditorMenu,'-',0,0,[]); CommonActions(FEditorMenu);
+  AddAction(FEditorMenu,'-',0,0,[]);
+  AddAction(FEditorMenu,'なぞり入力を開始',EA_TRACE,TRACE_SHORTCUT,[]);
   FStrokeMenu:=TPopupMenu.Create(Self); CommonActions(FStrokeMenu);
   FPointMenu:=TPopupMenu.Create(Self); FPointMenu.Images:=FPointIcons;
 end;
@@ -333,7 +369,9 @@ end;
 procedure TWritingSettingsForm.PathContext(Sender: TObject; MousePos: TPoint; var Handled: Boolean);
 var P: TPoint; I,Choice: Integer;
 begin
-  Handled:=True; FSinglePlaying:=False; FDragPoint:=-1; FEditPaint.MouseCapture:=False;
+  Handled:=True;
+  if FTraceSource<>nil then begin FinishTrace; Exit end;
+  FSinglePlaying:=False; FDragPoint:=-1; FEditPaint.MouseCapture:=False;
   FEditPaint.SetFocus;
   if (MousePos.X<0) and (FSelectedHit.Stroke>=0) then
     MousePos:=Point(Round(FViewX+FSelectedHit.Point.X*FViewScale),Round(FViewY+FSelectedHit.Point.Y*FViewScale));
@@ -367,6 +405,8 @@ var H: TStrokeHit;
 begin
   Result:=False;
   if (FCurrent=nil) or (FPages.ActivePage<>FEditPage) or (ActiveControl is TCustomEdit) then Exit;
+  if Action=EA_TRACE then Exit(not FCurrent.Missing and (Length(FCurrent.Mask)>0));
+  if FTraceSource<>nil then Exit;
   case Action of
     EA_SPLIT: begin
       H:=FSelectedHit;
@@ -403,6 +443,11 @@ procedure TWritingSettingsForm.ExecuteEditAction(Action: Integer);
 var Before: TGlyphEditState; Indices,After: TArray<Integer>; I,Index,KeepPoint: Integer; KeepHit: TStrokeHit;
 begin
   if not CanEditAction(Action) then Exit;
+  if Action=EA_TRACE then
+  begin
+    if FTraceSource=nil then StartTrace else FinishTrace;
+    Exit;
+  end;
   if Action=EA_UNDO then begin ApplyHistory(False); Exit end;
   if Action=EA_REDO then begin ApplyHistory(True); Exit end;
   if Action=EA_PLAY then
@@ -501,11 +546,13 @@ begin
   Position:=poScreenCenter; ClientWidth:=1120; ClientHeight:=790;
   Constraints.MinWidth:=940; Constraints.MinHeight:=700;
   Font.Name:='Yu Gothic UI'; Font.Size:=10; KeyPreview:=True; OnKeyDown:=FormKey;
+  OnKeyUp:=FormKeyUp; OnDeactivate:=FormDeactivated;
   OnCloseQuery:=CloseSettings;
   OnShow:=FormShown; OnAfterMonitorDpiChanged:=MonitorDpiChanged;
   FDragPoint:=-1; FSelectedPoint:=-1; FSelectedHit.Stroke:=-1;
   FPreview:=TWritingRenderer.Create; FSingle:=TWritingRenderer.Create; FEditEngine:=TWritingFontEngine.Create;
   FUndo:=TList<TGlyphEditState>.Create; FRedo:=TList<TGlyphEditState>.Create;
+  FTraceGuide:=TList<TPointF>.Create;
   FDisplayBitmap:=TBitmap.Create; FDisplayBitmap.PixelFormat:=pf32bit;
   Bottom:=TPanel.Create(Self); Bottom.Parent:=Self; Bottom.Align:=alBottom; Bottom.Height:=29; Bottom.BevelOuter:=bvNone;
   FStatus:=TLabel.Create(Self); FStatus.Parent:=Bottom; FStatus.AutoSize:=False;
@@ -590,6 +637,7 @@ begin
   FEditorStatus.WordWrap:=True; FEditorStatus.Caption:='文字を選択してください。Space: 1文字を再生 / 停止。画を選び、中央の経路点をドラッグして補正できます。';
   FEditPaint:=TWritingPaintBox.Create(Self); FEditPaint.Parent:=FEditPage; FEditPaint.Align:=alClient; FEditPaint.OnPaint:=PaintEditor;
   FEditPaint.OnMouseDown:=PathMouseDown; FEditPaint.OnMouseMove:=PathMouseMove; FEditPaint.OnMouseUp:=PathMouseUp;
+  FEditPaint.OnCaptureLost:=TraceCaptureLost;
   FEditPaint.OnContextPopup:=PathContext; CreateEditorMenus;
   FTimer:=TTimer.Create(Self); FTimer.Interval:=33; FTimer.OnTimer:=Tick;
   ApplyPalette(Self);
@@ -646,6 +694,7 @@ begin FitToWorkArea end;
 destructor TWritingSettingsForm.Destroy;
 begin
   if FTimer<>nil then FTimer.Enabled:=False;
+  FreeAndNil(FTraceSource); FreeAndNil(FTraceGuide);
   FCurrent:=nil; FUndo.Free; FRedo.Free; FDisplayBitmap.Free; FEditEngine.Free; FSingle.Free; FPreview.Free; inherited;
 end;
 
@@ -782,6 +831,20 @@ begin
   if ActiveControl is TCustomEdit then Exit;
   if FPages.ActivePage=FEditPage then
   begin
+    if (Key=TRACE_SHORTCUT) and (Shift=[]) and CanEditAction(EA_TRACE) then
+    begin
+      Key:=0;
+      if not FTraceShortcutDown then
+      begin
+        FTraceShortcutDown:=True;
+        ExecuteEditAction(EA_TRACE);
+      end;
+      Exit;
+    end;
+    if (Key=VK_ESCAPE) and (FTraceSource<>nil) then
+    begin
+      Key:=0; EndTrace; UpdateStrokeList; FEditPaint.Invalidate; Exit;
+    end;
     Action:=0;
     if ssCtrl in Shift then
       case Key of
@@ -807,6 +870,16 @@ begin
   else ExecuteEditAction(EA_PLAY);
 end;
 
+procedure TWritingSettingsForm.FormKeyUp(Sender: TObject; var Key: Word; Shift: TShiftState);
+begin
+  if Key=TRACE_SHORTCUT then FTraceShortcutDown:=False;
+end;
+
+procedure TWritingSettingsForm.FormDeactivated(Sender: TObject);
+begin
+  FTraceShortcutDown:=False;
+end;
+
 procedure TWritingSettingsForm.RestartClick(Sender: TObject);
 begin FStart:=GetTickCount64; FPaused:=False; FPreviewPaint.Invalidate end;
 
@@ -819,6 +892,7 @@ end;
 procedure TWritingSettingsForm.SelectCharacter(Sender: TObject);
 var Key: string;
 begin
+  EndTrace;
   FCurrent:=nil; FSinglePlaying:=False; FDragPoint:=-1; FSelectedPoint:=-1;
   if FChars.ItemIndex>=0 then FCurrent:=FEditEngine.Glyph(FChars.Items[FChars.ItemIndex]);
   Key:=''; if FCurrent<>nil then Key:=FCurrent.FontID+'|'+FCurrent.Character;
@@ -859,6 +933,13 @@ begin
   if FEditorMenu<>nil then MenuPopup(FEditorMenu);
   if FStrokeMenu<>nil then MenuPopup(FStrokeMenu);
   if FCurrent=nil then begin FEditorStatus.Caption:='文字を選択してください。'; Exit end;
+  if FTraceSource<>nil then
+  begin
+    Text:=Format('%s — なぞり入力中（%d画）',[FCurrent.Character,Length(FTraceStrokes)])+sLineBreak+
+      '左ドラッグ1回で1画、点はクリック。右クリック／F2で確定して書き順を置換。Escで取消。';
+    FEditorStatus.Caption:=Text; FEditorStatus.Hint:=Text;
+    Exit;
+  end;
   State:='自動推定';
   if FCurrent.ReferenceUsed then
     if FCurrent.ReferenceOrderOnly then State:='書き順参照（順序・方向）' else State:='書き順参照';
@@ -867,7 +948,7 @@ begin
   if FSelectedHit.Stroke>=0 then Text:=Text+Format(' 選択位置: %d画目。右クリック→頂点作成／分割。',[FSelectedHit.Stroke+1])
   else Text:=Text+' 線を右クリック→頂点作成／分割。重なりは色付き候補から選択。';
   Text:=Text+Format(' 選択中: %d画。太線＝選択、●始点 → □終点。',[FStrokes.SelCount]);
-  Text:=Text+' 頂点を選択→ドラッグで移動・右クリックで削除。画一覧は複数選択→右クリックで結合／削除。';
+  Text:=Text+' 右クリック／F2でなぞり入力。';
   FEditorStatus.Caption:=Text; FEditorStatus.Hint:=Text;
 end;
 
@@ -904,6 +985,96 @@ begin
     SaveGlyphLearning(FCurrent); UpdateStrokeList; FEditPaint.Invalidate;
     FSinglePlaying:=False; FSingleStart:=GetTickCount64;
   except on E: Exception do MessageDlg('学習を保存できませんでした。'+sLineBreak+E.Message,mtError,[mbOK],0) end;
+end;
+
+procedure TWritingSettingsForm.StartTrace;
+begin
+  if (FDragPoint>=0) and FPathChanged then RestoreGlyphState(FCurrent,FDragBefore);
+  FDragPoint:=-1; FEditPaint.MouseCapture:=False; FSinglePlaying:=False;
+  FTraceSource:=TWritingGlyph.Create;
+  try
+    // 表示中の学習経路から独立して元の中心線を取得する。マスクは読み取り専用で借用する。
+    FTraceSource.Width:=FCurrent.Width; FTraceSource.Height:=FCurrent.Height; FTraceSource.Mask:=FCurrent.Mask;
+    InferGlyphStrokes(FTraceSource,False);
+  except
+    FreeAndNil(FTraceSource);
+    raise;
+  end;
+  FEditPaint.SetFocus;
+  FStrokes.Enabled:=False;
+  FStrokes.Clear;
+  UpdateEditorStatus; FEditPaint.Repaint;
+end;
+
+procedure TWritingSettingsForm.EndTrace;
+begin
+  if FTraceSource=nil then Exit;
+  FreeAndNil(FTraceSource); FTraceGuide.Clear; FTraceStrokes:=nil; FTracePointCount:=0;
+  FEditPaint.MouseCapture:=False;
+  FStrokes.Enabled:=True;
+end;
+
+procedure TWritingSettingsForm.FinishTrace;
+var Before: TGlyphEditState;
+begin
+  if Length(FTraceStrokes)=0 then
+  begin
+    EndTrace; UpdateStrokeList; FEditPaint.Invalidate; Exit;
+  end;
+  Before:=CaptureGlyphState(FCurrent);
+  try
+    FCurrent.Strokes:=Copy(FTraceStrokes);
+    PrepareGlyphTiming(FCurrent);
+    SaveGlyphLearning(FCurrent);
+  except
+    on E: Exception do
+    begin
+      RestoreGlyphState(FCurrent,Before);
+      MessageDlg('学習を保存できませんでした。'+sLineBreak+E.Message,mtError,[mbOK],0);
+      Exit;
+    end;
+  end;
+  EndTrace;
+  CommitEdit(Before,False);
+end;
+
+procedure TWritingSettingsForm.CaptureTracePoint(X,Y: Integer);
+var P: TPointF;
+begin
+  if FTraceGuide.Count>=MAX_TRACE_GUIDE_POINTS then Exit;
+  P:=PointF((X-FViewX)/FViewScale,(Y-FViewY)/FViewScale);
+  if (FTraceGuide.Count>0) and (Distance(FTraceGuide.Last,P)<0.75) then Exit;
+  FTraceGuide.Add(P); FEditPaint.Invalidate;
+end;
+
+procedure TWritingSettingsForm.AcceptTraceStroke;
+var Stroke: TStroke; Matched,FitsLimits: Boolean;
+begin
+  Stroke:=Default(TStroke);
+  Matched:=(FTraceGuide.Count<MAX_TRACE_GUIDE_POINTS) and
+    TrySnapGlyphTrace(FTraceSource,FTraceGuide.ToArray,Stroke.Points);
+  FTraceGuide.Clear; FEditPaint.MouseCapture:=False;
+  FitsLimits:=(Length(FTraceStrokes)<1024) and (FTracePointCount+Length(Stroke.Points)<=65536);
+  if Matched and FitsLimits then
+  begin
+    Stroke.ID:=Length(FTraceStrokes);
+    FTraceStrokes:=FTraceStrokes+[Stroke];
+    Inc(FTracePointCount,Length(Stroke.Points));
+    FStrokes.Items.Add(IntToStr(Stroke.ID+1));
+  end;
+  UpdateEditorStatus;
+  if not Matched then
+    FEditorStatus.Caption:=FEditorStatus.Caption+sLineBreak+'中心線に合わせられませんでした。この画をなぞり直してください。'
+  else if not FitsLimits then
+    FEditorStatus.Caption:=FEditorStatus.Caption+sLineBreak+'入力できる画数または点数の上限に達しました。';
+  FEditorStatus.Hint:=FEditorStatus.Caption;
+  FEditPaint.Invalidate;
+end;
+
+procedure TWritingSettingsForm.TraceCaptureLost(Sender: TObject);
+begin
+  if (FTraceSource=nil) or (FTraceGuide.Count=0) then Exit;
+  FTraceGuide.Clear; FEditPaint.Invalidate;
 end;
 
 procedure TWritingSettingsForm.StrokeMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X,Y: Integer);
@@ -959,13 +1130,13 @@ var C: TCanvas; I,X,Y: Integer; R: TRect; S: TWritingSettings;
     Color:=ColorToRGB(Result);
     Result:=RGB((GetRValue(Color)+64) div 3,(GetGValue(Color)+64) div 3,(GetBValue(Color)+64) div 3);
   end;
-  procedure Trace(Index: Integer; Color: TColor; Width: Integer);
+  procedure Trace(const Points: TArray<TPointF>; Color: TColor; Width: Integer);
   var J: Integer; P: TPointF;
   begin
     C.Pen.Color:=Color; C.Pen.Width:=Width; C.Pen.Style:=psSolid;
-    for J:=0 to High(FCurrent.Strokes[Index].Points) do
+    for J:=0 to High(Points) do
     begin
-      P:=ScreenPoint(FCurrent.Strokes[Index].Points[J]);
+      P:=ScreenPoint(Points[J]);
       if J=0 then C.MoveTo(Round(P.X),Round(P.Y)) else C.LineTo(Round(P.X),Round(P.Y));
     end;
   end;
@@ -1038,6 +1209,25 @@ var C: TCanvas; I,X,Y: Integer; R: TRect; S: TWritingSettings;
       LabelAt(PointF(Q.X+16,Q.Y+12),Format('%d 終点',[Index+1]),Color);
     end;
   end;
+  procedure PaintTracing;
+  var J,Radius: Integer; P,Q: TPointF; Color: TColor;
+  begin
+    Radius:=UiPx(4);
+    for J:=0 to High(FTraceStrokes) do
+    begin
+      Color:=STROKE_COLORS[J mod Length(STROKE_COLORS)];
+      Trace(FTraceStrokes[J].Points,Color,UiPx(5));
+      P:=ScreenPoint(FTraceStrokes[J].Points[0]);
+      Q:=ScreenPoint(FTraceStrokes[J].Points[High(FTraceStrokes[J].Points)]);
+      C.Pen.Width:=1; C.Pen.Color:=clWhite; C.Brush.Style:=bsSolid; C.Brush.Color:=Color;
+      C.Ellipse(Round(P.X)-Radius,Round(P.Y)-Radius,Round(P.X)+Radius+1,Round(P.Y)+Radius+1);
+      if Distance(P,Q)>2*Radius then
+        C.Rectangle(Round(Q.X)-Radius,Round(Q.Y)-Radius,Round(Q.X)+Radius+1,Round(Q.Y)+Radius+1);
+      LabelAt(PointF(P.X+Radius+2,P.Y-Radius-10),IntToStr(J+1),Color);
+    end;
+    if FTraceGuide.Count>0 then
+      Trace(FTraceGuide.ToArray,clWhite,UiPx(2));
+  end;
 begin
   C:=FEditPaint.Canvas; C.Brush.Style:=bsSolid; C.Pen.Style:=psSolid;
   C.Brush.Color:=UI_BACKGROUND; C.FillRect(FEditPaint.ClientRect); if FCurrent=nil then Exit;
@@ -1064,17 +1254,20 @@ begin
     begin
       Row:=Bitmap.ScanLine[Y];
       for X:=0 to FCurrent.Width-1 do
-      begin A:=32+FCurrent.Mask[Y*FCurrent.Width+X] div 4;
+      begin
+        A:=FCurrent.Mask[Y*FCurrent.Width+X];
+        if FTraceSource=nil then A:=32+A div 4 else A:=32+A div 2;
         Row[X*4]:=A; Row[X*4+1]:=A; Row[X*4+2]:=A; Row[X*4+3]:=255 end;
     end;
     R:=Rect(Round(FViewX),Round(FViewY),Round(FViewX+FCurrent.Width*FViewScale),Round(FViewY+FCurrent.Height*FViewScale));
     C.StretchDraw(R,Bitmap);
   finally Bitmap.Free end;
+  if FTraceSource<>nil then begin PaintTracing; Exit end;
   // 非選択経路を先に薄く描き、選択した経路を最後に白黒の縁と8pxの色線で重ねる。
   for I:=0 to High(FCurrent.Strokes) do
   begin
     if Selected(I) then Continue;
-    Trace(I,PathColor(I,False),2); Handles(I,False);
+    Trace(FCurrent.Strokes[I].Points,PathColor(I,False),2); Handles(I,False);
     if Length(FCurrent.Strokes[I].Points)=0 then Continue;
     var P: TPointF; P:=ScreenPoint(FCurrent.Strokes[I].Points[0]);
     C.Font.Size:=9; C.Font.Style:=[]; C.Font.Color:=STROKE_COLORS[I mod 10]; C.Brush.Style:=bsClear;
@@ -1082,7 +1275,8 @@ begin
   end;
   for I:=0 to High(FCurrent.Strokes) do if Selected(I) then
   begin
-    Trace(I,clWhite,14); Trace(I,$303038,11); Trace(I,STROKE_COLORS[I mod 10],8);
+    Trace(FCurrent.Strokes[I].Points,clWhite,14); Trace(FCurrent.Strokes[I].Points,$303038,11);
+    Trace(FCurrent.Strokes[I].Points,STROKE_COLORS[I mod 10],8);
     Handles(I,True); DirectionAndEnds(I);
   end;
   // 選択点は全経路より手前に、元の画の色と大きな白黒の縁で確実に表示する。
@@ -1104,6 +1298,12 @@ begin
   if (Button<>mbLeft) or (FCurrent=nil) then Exit;
   if FSinglePlaying then begin FSinglePlaying:=False; FEditPaint.Repaint end;
   if FViewScale<=0 then Exit;
+  if FTraceSource<>nil then
+  begin
+    FEditPaint.SetFocus; FTraceGuide.Clear; FEditPaint.MouseCapture:=True;
+    CaptureTracePoint(X,Y); UpdateEditorStatus;
+    Exit;
+  end;
   FEditPaint.SetFocus; Hit.Stroke:=-1; J:=-1;
   if (FSelectedHit.Stroke>=0) and
     (Hypot(FViewX+FSelectedHit.Point.X*FViewScale-X,FViewY+FSelectedHit.Point.Y*FViewScale-Y)<=16) and
@@ -1135,6 +1335,11 @@ procedure TWritingSettingsForm.PathMouseMove(Sender: TObject; Shift: TShiftState
 var I,J: Integer; Original,Target: TPointF;
 begin
   if (FCurrent=nil) or FSinglePlaying or (FViewScale<=0) then Exit;
+  if FTraceSource<>nil then
+  begin
+    if (FTraceGuide.Count>0) and (ssLeft in Shift) then CaptureTracePoint(X,Y);
+    Exit;
+  end;
   if FDragPoint<0 then Exit; I:=FSelectedHit.Stroke; if I<0 then Exit;
   if not FPathChanged and (Hypot(X-FDragOrigin.X,Y-FDragOrigin.Y)<4) then Exit;
   Original:=FDragBefore.Strokes[I].Points[FDragPoint];
@@ -1155,7 +1360,17 @@ end;
 procedure TWritingSettingsForm.PathMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X,Y: Integer);
 var Hit: TStrokeHit; J: Integer;
 begin
-  if (Button<>mbLeft) or (FDragPoint<0) then Exit;
+  if Button<>mbLeft then Exit;
+  if FTraceSource<>nil then
+  begin
+    if FTraceGuide.Count>0 then
+    begin
+      CaptureTracePoint(X,Y);
+      AcceptTraceStroke;
+    end;
+    Exit;
+  end;
+  if FDragPoint<0 then Exit;
   Hit:=FSelectedHit; J:=FDragPoint; FDragPoint:=-1; FEditPaint.MouseCapture:=False;
   if FPathChanged then
   begin PrepareGlyphTiming(FCurrent); CommitEdit(FDragBefore); SelectPathPoint(Hit,J) end
@@ -1177,24 +1392,26 @@ begin
 end;
 
 procedure TWritingSettingsForm.DrawStroke(Control: TWinControl; Index: Integer; Rect: TRect; State: TOwnerDrawState);
-var C: TCanvas; J: Integer; P: TPointF; Fit: Double;
+var C: TCanvas; J: Integer; P: TPointF; Fit: Double; Strokes: TArray<TStroke>;
 begin
   C:=FStrokes.Canvas; C.Font:=FStrokes.Font;
   C.Font.Color:=UI_TEXT;
   if odSelected in State then C.Brush.Color:=UI_SELECTION else C.Brush.Color:=UI_SURFACE;
-  C.FillRect(Rect); if (FCurrent=nil) or (Index>=Length(FCurrent.Strokes)) then Exit;
+  C.FillRect(Rect); if FCurrent=nil then Exit;
+  if FTraceSource<>nil then Strokes:=FTraceStrokes else Strokes:=FCurrent.Strokes;
+  if Index>=Length(Strokes) then Exit;
   C.Pen.Color:=clWhite; C.Pen.Width:=UiPx(2); C.Brush.Color:=STROKE_COLORS[Index mod 10];
   C.Ellipse(Rect.Left+UiPx(8),Rect.Top+UiPx(14),Rect.Left+UiPx(29),Rect.Top+UiPx(35));
   Fit:=UiPx(32)/Max(1,Max(FCurrent.Width,FCurrent.Height));
   C.Pen.Color:=STROKE_COLORS[Index mod 10]; C.Pen.Width:=UiPx(2);
-  for J:=0 to High(FCurrent.Strokes[Index].Points) do
+  for J:=0 to High(Strokes[Index].Points) do
   begin
-    P:=FCurrent.Strokes[Index].Points[J];
+    P:=Strokes[Index].Points[J];
     if J=0 then C.MoveTo(Rect.Left+UiPx(42)+Round(P.X*Fit),Rect.Top+UiPx(8)+Round(P.Y*Fit))
     else C.LineTo(Rect.Left+UiPx(42)+Round(P.X*Fit),Rect.Top+UiPx(8)+Round(P.Y*Fit));
   end;
   C.Brush.Style:=bsClear; C.Font.Size:=10; C.TextOut(Rect.Left+UiPx(88),Rect.Top+UiPx(14),IntToStr(Index+1)+' 画');
-  if FCurrent.Strokes[Index].Reversed then C.TextOut(Rect.Left+UiPx(148),Rect.Top+UiPx(14),'反転');
+  if Strokes[Index].Reversed then C.TextOut(Rect.Left+UiPx(148),Rect.Top+UiPx(14),'反転');
   C.Brush.Style:=bsSolid;
 end;
 

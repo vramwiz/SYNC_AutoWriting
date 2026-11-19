@@ -5,7 +5,7 @@
 // Glyphを呼出中だけ借用し、採用時だけStrokesを置換する。Mask・学習・参照データは不変。
 interface
 
-uses AutoWriting_Types;
+uses System.Types, AutoWriting_Types;
 
 type
   TReferenceFitInfo = record
@@ -21,9 +21,14 @@ type
 
 function TryApplyStrokeReference(Glyph: TWritingGlyph; out Info: TReferenceFitInfo): Boolean;
 
+// 参照適用前の推定経路とマスクを借用し、手描き順に沿った中心線の点列を返す。
+// Guideは128 emのマスク座標。未照合ならFalseと空配列を返し、Glyphは変更しない。
+function TrySnapGlyphTrace(Glyph: TWritingGlyph; const Guide: TArray<TPointF>;
+  out Path: TArray<TPointF>): Boolean;
+
 implementation
 
-uses System.SysUtils, System.Types, System.Math, System.Generics.Collections,
+uses System.SysUtils, System.Math, System.Generics.Collections,
   AutoWriting_ReferenceData, AutoWriting_ReferenceOrder;
 
 type
@@ -462,12 +467,14 @@ end;
 
 // 離散Frechet型の積グラフ探索。状態は(参照上の進行位置,実フォント中心線の節点)。
 // 紙面上の位置誤差・移動方向・進行距離を評価し、交差でも参照の曲がり方を追う。
+const MAX_TRACE_STATES = 524288;
+
 function TraceReference(const Nodes: TNodes; const Target: TPoints; out Path: TPoints;
   out PathStages: TArray<Integer>; TrackStages: Boolean; const Fold, EarlierFold: TFoldAnchor;
-  ExactEnd: Boolean): Boolean;
+  ExactEnd: Boolean; Leash: Double=12): Boolean;
 var Costs: TArray<Double>; Previous,Heap,Positions: TArray<Integer>; Reverse: TList<Integer>;
   NV,NS,HeapCount,I,J,State,Stage,V,Next,Last,EndState,At,Parent,Child,Temp: Integer;
-  Leash,MinStart,MinEnd,EndSlack,D,Step,Cost,DX,DY,VX,VY,Len,Dir: Double;
+  MinStart,MinEnd,EndSlack,D,Step,Cost,DX,DY,VX,VY,Len,Dir: Double;
   function Squared(const A,B: TPointF): Double; inline;
   begin Result:=Sqr(A.X-B.X)+Sqr(A.Y-B.Y) end;
   procedure Offer(ID,FromID: Integer; Value: Double);
@@ -484,13 +491,13 @@ var Costs: TArray<Double>; Previous,Heap,Positions: TArray<Integer>; Reverse: TL
   end;
 begin
   Result:=False; Path:=nil; PathStages:=nil; NV:=Length(Nodes); NS:=NV*Length(Target);
-  if (NV=0) or (NS=0) or (NS>524288) then Exit;
-  Leash:=12; SetLength(Costs,NS); SetLength(Previous,NS); SetLength(Heap,NS); SetLength(Positions,NS);
+  if (NV=0) or (NS=0) or (NS>MAX_TRACE_STATES) then Exit;
+  SetLength(Costs,NS); SetLength(Previous,NS); SetLength(Heap,NS); SetLength(Positions,NS);
   for I:=0 to NS-1 do begin Costs[I]:=1E30; Previous[I]:=-1; Positions[I]:=-1 end;
   MinStart:=1E30; MinEnd:=1E30; HeapCount:=0; Last:=High(Target); EndState:=-1;
   for I:=0 to NV-1 do
   begin MinStart:=Min(MinStart,Squared(Nodes[I].P,Target[0])); MinEnd:=Min(MinEnd,Squared(Nodes[I].P,Target[Last])) end;
-  if (MinStart>64) or (MinEnd>64) then Exit;
+  if (MinStart>Sqr(Leash*2/3)) or (MinEnd>Sqr(Leash*2/3)) then Exit;
   if ExactEnd then EndSlack:=0 else EndSlack:=2.25;
   for I:=0 to NV-1 do
   begin D:=Squared(Nodes[I].P,Target[0]); if D<=MinStart+2.25 then Offer(I,-1,D*2) end;
@@ -547,6 +554,50 @@ begin
   finally Reverse.Free end;
   D:=PathLength(Path); Step:=PathLength(Target);
   Result:=(D>=Max(0,Step*0.4-2)) and (D<=Step*1.8+3);
+end;
+
+function TrySnapGlyphTrace(Glyph: TWritingGlyph; const Guide: TArray<TPointF>;
+  out Path: TArray<TPointF>): Boolean;
+const
+  TraceLeash = 21;
+  PointTolerance = 14;
+var
+  Nodes: TNodes;
+  Node: TGraphNode;
+  Target, Candidate: TPoints;
+  UnusedStages: TArray<Integer>;
+  NoFold: TFoldAnchor;
+  Recovered, Count: Integer;
+  Travel, Best, D: Double;
+  Nearest: TPointF;
+begin
+  Result:=False; Path:=nil;
+  if Length(Guide)=0 then Exit;
+  Nodes:=BuildGraph(Glyph,Recovered);
+  if Length(Nodes)=0 then Exit;
+  Travel:=PathLength(Guide);
+  if Travel<=1.5 then
+  begin
+    // 濁点や句点の入力はクリックで中心線上の一点に合わせる。
+    Best:=PointTolerance; Nearest:=Guide[0];
+    for Node in Nodes do
+    begin
+      D:=Distance(Guide[0],Node.P);
+      if D<Best then begin Best:=D; Nearest:=Node.P end;
+    end;
+    if Best>=PointTolerance then Exit;
+    Path:=[Nearest,Nearest];
+    Exit(True);
+  end;
+  Count:=Min(Min(192,MAX_TRACE_STATES div Length(Nodes)),Ceil(Travel/3)+1);
+  if Count<2 then Exit;
+  Target:=Samples(Guide,Count);
+  RepairGraphNeighbours(Glyph,Nodes);
+  NoFold.Stage:=-1; NoFold.Node:=-1;
+  if not TraceReference(Nodes,Target,Candidate,UnusedStages,False,NoFold,NoFold,False,TraceLeash) then Exit;
+  if (Length(Candidate)>8192) or (Candidate[0]=Candidate[1]) then Exit;
+  Path:=Candidate;
+  Result:=True;
 end;
 
 function OrderedError(const Targets: TPaths; const Strokes: TArray<TStroke>): Double;

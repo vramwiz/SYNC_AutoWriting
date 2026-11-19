@@ -6,12 +6,13 @@ interface
 
 type TEditRegressionCheck = procedure(Value: Boolean; const MessageText: string);
 procedure TestEditRegressions(Check: TEditRegressionCheck);
+procedure TestTraceSnapping(Check: TEditRegressionCheck);
 
 implementation
 
 uses System.SysUtils, System.Types, System.Hash, System.IOUtils,
   AutoWriting_Types, AutoWriting_Editing, AutoWriting_Vertices,
-  AutoWriting_Branches, AutoWriting_Inference, AutoWriting_Learning;
+  AutoWriting_Branches, AutoWriting_Inference, AutoWriting_Learning, AutoWriting_ReferenceFit;
 
 procedure TestEditRegressions(Check: TEditRegressionCheck);
 var G,Loaded: TWritingGlyph; A,B,Original,Moved: TStroke; State: TGlyphEditState;
@@ -90,6 +91,41 @@ begin
     if (FileName<>'') and TFile.Exists(FileName) then TFile.Delete(FileName);
     if (Folder<>'') and TDirectory.Exists(Folder) then TDirectory.Delete(Folder,False);
   end;
+end;
+
+procedure TestTraceSnapping(Check: TEditRegressionCheck);
+var Glyph: TWritingGlyph; P: TPointF; Path: TArray<TPointF>; I,OriginalCount: Integer;
+  VisitedIntersection: Boolean;
+begin
+  Glyph:=TWritingGlyph.Create;
+  try
+    Glyph.Width:=48; Glyph.Height:=48; SetLength(Glyph.Mask,48*48);
+    for I:=4 to 32 do
+    begin
+      Glyph.Mask[18*48+I]:=255;
+      Glyph.Mask[I*48+18]:=255;
+    end;
+    Glyph.Mask[41*48+43]:=255;
+    InferGlyphStrokes(Glyph,False); OriginalCount:=Length(Glyph.Strokes);
+    Check(TrySnapGlyphTrace(Glyph,[PointF(29,22),PointF(22,22),PointF(22,10),PointF(22,4)],Path),
+      'Offset drag did not follow the two arms through the crossing');
+    Check((Path[0].X>25) and (Path[0].Y=18) and (Path[High(Path)].X=18) and (Path[High(Path)].Y<8),
+      'Snapping changed the order or direction of the stroke');
+    VisitedIntersection:=False;
+    for P in Path do
+    begin
+      Check(Glyph.Mask[Round(P.Y)*Glyph.Width+Round(P.X)]=255,'Snapped path left the centerline');
+      VisitedIntersection:=VisitedIntersection or (P=PointF(18,18));
+    end;
+    Check(VisitedIntersection,'Snapped path bypassed the intersection');
+    Check(TrySnapGlyphTrace(Glyph,[PointF(42,39)],Path) and (Length(Path)=2) and
+      (Path[0]=PointF(43,41)) and (Path[0]=Path[1]),'Offset click did not snap to the separated dot');
+    Check(not TrySnapGlyphTrace(Glyph,[PointF(28,18),PointF(43,41)],Path) and (Length(Path)=0),
+      'One drag must never bridge disconnected ink');
+    Check(not TrySnapGlyphTrace(Glyph,[PointF(-30,-20)],Path),'Click far from the glyph created a path');
+    Check((Length(Glyph.Strokes)=OriginalCount) and not Glyph.Learned,'Snapping took ownership of the original glyph');
+    Writeln('PASS ordered centerline snapping through an intersection, separated dot and invalid gestures');
+  finally Glyph.Free end;
 end;
 
 end.
