@@ -12,9 +12,10 @@ type
     Points: TArray<TPointF>; // 正規化座標。配列の先頭から末尾が筆記方向。
     Curl: Boolean;
   end;
+  TReferenceVariant = TArray<TReferenceStroke>;
   TStrokeReference = record
     Codepoint, Source: Cardinal;
-    Strokes: TArray<TReferenceStroke>;
+    Variants: TArray<TReferenceVariant>; // 正準の書き順が先頭。以降は字体違い。
   end;
 
 function StrokeReferenceCount: Integer;
@@ -44,7 +45,10 @@ begin
 end;
 
 function FindStrokeReference(Codepoint: Cardinal; out Reference: TStrokeReference): Boolean;
-var Lo,Hi,M,P,E,I,J,N: Integer; Code: Cardinal;
+var
+  Lo, Hi, M, P, E, VariantIndex, StrokeIndex, PointIndex, Count: Integer;
+  Code: Cardinal;
+  Stroke: ^TReferenceStroke;
 begin
   Reference:=Default(TStrokeReference); Result:=False;
   Lo:=0; Hi:=StrokeReferenceCount-1;
@@ -56,16 +60,32 @@ begin
       P:=U32(20+M*16); E:=P+Integer(U32(24+M*16));
       if (P<16+StrokeReferenceCount*16) or (E>Length(Data)) or (E<P+2) then Exit;
       Reference.Codepoint:=Codepoint; Reference.Source:=U32(28+M*16);
-      N:=U16(P); Inc(P,2); if (N=0) or (N>64) then Exit;
-      SetLength(Reference.Strokes,N);
-      for I:=0 to N-1 do
+      Count := U16(P);
+      Inc(P, 2);
+      if (Count = 0) or (Count > 8) then Exit;
+      SetLength(Reference.Variants, Count);
+      for VariantIndex := 0 to High(Reference.Variants) do
       begin
-        if P+4>E then Exit;
-        Reference.Strokes[I].Curl:=U16(P)<>0; N:=U16(P+2); Inc(P,4);
-        if (N<2) or (N>512) or (P+N*4>E) then Exit;
-        SetLength(Reference.Strokes[I].Points,N);
-        for J:=0 to N-1 do
-        begin Reference.Strokes[I].Points[J]:=PointF(U16(P)/65535,U16(P+2)/65535); Inc(P,4) end;
+        if P + 2 > E then Exit;
+        Count := U16(P);
+        Inc(P, 2);
+        if (Count = 0) or (Count > 64) then Exit;
+        SetLength(Reference.Variants[VariantIndex], Count);
+        for StrokeIndex := 0 to Count - 1 do
+        begin
+          if P + 4 > E then Exit;
+          Stroke := @Reference.Variants[VariantIndex][StrokeIndex];
+          Stroke^.Curl := (U16(P) and 1) <> 0;
+          Count := U16(P + 2);
+          Inc(P, 4);
+          if (Count < 2) or (Count > 512) or (P + Count * 4 > E) then Exit;
+          SetLength(Stroke^.Points, Count);
+          for PointIndex := 0 to Count - 1 do
+          begin
+            Stroke^.Points[PointIndex] := PointF(U16(P) / 65535, U16(P + 2) / 65535);
+            Inc(P, 4);
+          end;
+        end;
       end;
       Result:=P=E; Exit;
     end;

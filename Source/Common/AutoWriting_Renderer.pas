@@ -22,19 +22,25 @@ type
   end;
   TWritingRenderer = class
   private
+    type TCharacterMove = record
+      StartDistance, Length, PreviousMoveDistance: Double;
+    end;
+  private
     FEngine: TWritingFontEngine;
     FKey: string;
     FRevision: Integer;
     FGlyphs: TArray<TPlacedGlyph>;
     FSegments: TArray<TPenSegment>;
     FBounds: TRectF;
-    FTotalDistance: Double;
+    FTotalDistance, FTotalMoveDistance: Double;
+    FCharacterMoves: TArray<TCharacterMove>;
     procedure BuildLayout(const S: TWritingSettings);
+    function DistanceAtTime(Time: Double; const S: TWritingSettings): Double;
   public
     constructor Create;
     destructor Destroy; override;
     procedure Prepare(const S: TWritingSettings);
-    // 解析済みの総距離÷速度（秒）。出力拡大率やオブジェクト長は使用しない。
+    // 画と画間の移動、文字間の移動を指定された速度で計算する（秒）。
     function Duration(const S: TWritingSettings): Double;
     // Input=nilで透明背景。入力は借用し、Outputはレンダラー呼出側が所有する。
     procedure Render(const Input: TWritingPixels; Width,Height: Integer;
@@ -83,20 +89,22 @@ begin FEngine.Free; inherited end;
 procedure TWritingRenderer.Prepare(const S: TWritingSettings);
 var Key: string; LayoutSettings: TWritingSettings;
 begin
-  // 筆記具のサイズ・角度・光源はフレームごとに変えられるため、組版キーへ含めない。
+  // 速度は経路距離から時刻を求める段階で使い、組版キー（詳細JSON）へ含めない。
+  // 筆記具のサイズ・角度・光源もフレームごとに変えられる。
   LayoutSettings:=S; LayoutSettings.PenSize:=1; LayoutSettings.PenAngle:=0; LayoutSettings.LightX:=0; LayoutSettings.LightY:=0;
   Key:=S.Text+'|'+SettingsJSON(LayoutSettings);
   if (Key=FKey) and (FRevision=LearningRevision) then Exit;
   FKey:=''; FRevision:=-1;
-  FGlyphs:=nil; FSegments:=nil; FEngine.Configure(S); BuildLayout(S);
+  FGlyphs:=nil; FSegments:=nil; FCharacterMoves:=nil; FEngine.Configure(S); BuildLayout(S);
   FKey:=Key; FRevision:=LearningRevision;
 end;
 
 procedure TWritingRenderer.BuildLayout(const S: TWritingSettings);
 var Characters: TArray<string>; C: string; G: TWritingGlyph; PG: TPlacedGlyph;
   Placed: TList<TPlacedGlyph>; Segments: TList<TPenSegment>; Seg: TPenSegment;
-  CursorX,CursorY,Size,Ratio,Cell,LocalStart,StrokeStart,PosX,PosY: Double;
-  Last,A,B: TPointF; HavePen,HaveBounds: Boolean; I,J: Integer;
+  CharacterMoves: TList<TCharacterMove>; CharacterMove: TCharacterMove;
+  CursorX,CursorY,Size,Ratio,Cell,LocalStart,StrokeStart,MoveStart,PosX,PosY: Double;
+  Last,A,B: TPointF; HavePen,HaveBounds,GlyphHasPen: Boolean; I,J: Integer;
   procedure AddSegment(const P1,P2: TPointF; Down: Boolean; MinLength: Double=0);
   begin
     Seg.A:=P1; Seg.B:=P2; Seg.Length:=Max(MinLength,Distance(P1,P2));
@@ -104,9 +112,11 @@ var Characters: TArray<string>; C: string; G: TWritingGlyph; PG: TPlacedGlyph;
     if Seg.Length>0 then begin Segments.Add(Seg); FTotalDistance:=FTotalDistance+Seg.Length end;
   end;
 begin
-  Placed:=TList<TPlacedGlyph>.Create; Segments:=TList<TPenSegment>.Create;
+  Placed:=nil; Segments:=nil; CharacterMoves:=nil;
   try
-    FTotalDistance:=0; FBounds:=TRectF.Empty; CursorX:=0; CursorY:=0;
+    Placed:=TList<TPlacedGlyph>.Create; Segments:=TList<TPenSegment>.Create;
+    CharacterMoves:=TList<TCharacterMove>.Create;
+    FTotalDistance:=0; FTotalMoveDistance:=0; FBounds:=TRectF.Empty; CursorX:=0; CursorY:=0;
     HavePen:=False; HaveBounds:=False; Last:=PointF(0,0);
     Size:=SafeNumber(S.FontSize,80,12,256); Characters:=UnicodeCharacters(S.Text);
     for C in Characters do
@@ -139,13 +149,25 @@ begin
           FBounds.Right:=Max(FBounds.Right,PosX); FBounds.Bottom:=Max(FBounds.Bottom,PosY);
         end;
       end;
-      LocalStart:=FTotalDistance;
+      LocalStart:=FTotalDistance; GlyphHasPen:=False;
       for I:=0 to High(G.Strokes) do
       begin
         if Length(G.Strokes[I].Points)=0 then Continue;
         A:=G.Strokes[I].Points[0]; A:=PointF(PG.X+A.X*PG.Scale,PG.Y+A.Y*PG.Scale);
-        if HavePen then AddSegment(Last,A,False);
-        if I=0 then LocalStart:=FTotalDistance;
+        if HavePen then
+        begin
+          MoveStart:=FTotalDistance;
+          AddSegment(Last,A,False);
+          if not GlyphHasPen and (FTotalDistance>MoveStart) then
+          begin
+            CharacterMove.StartDistance:=MoveStart;
+            CharacterMove.Length:=FTotalDistance-MoveStart;
+            CharacterMove.PreviousMoveDistance:=FTotalMoveDistance;
+            CharacterMoves.Add(CharacterMove);
+            FTotalMoveDistance:=FTotalMoveDistance+CharacterMove.Length;
+          end;
+        end;
+        if not GlyphHasPen then LocalStart:=FTotalDistance;
         StrokeStart:=FTotalDistance;
         for J:=1 to High(G.Strokes[I].Points) do
         begin
@@ -155,18 +177,50 @@ begin
         // 点も一定距離を使う。ゼロ長画で時間が消えないようにする。
         if FTotalDistance-StrokeStart<G.Strokes[I].Length*PG.Scale then
           AddSegment(A,A,True,G.Strokes[I].Length*PG.Scale-(FTotalDistance-StrokeStart));
-        Last:=A; HavePen:=True;
+        Last:=A; HavePen:=True; GlyphHasPen:=True;
       end;
       PG.StartDistance:=LocalStart; PG.EndDistance:=FTotalDistance; Placed.Add(PG);
       if S.Vertical then CursorY:=CursorY+Size+Size*S.LetterGap
       else CursorX:=CursorX+Cell+Size*S.LetterGap;
     end;
-    FGlyphs:=Placed.ToArray; FSegments:=Segments.ToArray;
-  finally Segments.Free; Placed.Free end;
+    FGlyphs:=Placed.ToArray; FSegments:=Segments.ToArray; FCharacterMoves:=CharacterMoves.ToArray;
+  finally CharacterMoves.Free; Segments.Free; Placed.Free end;
+end;
+
+function WritingMoveSpeed(const S: TWritingSettings; Speed: Double): Double;
+begin
+  Result:=SafeNumber(S.MoveSpeed,0,0,10000);
+  if Result=0 then Result:=Speed else Result:=Max(1,Result);
 end;
 
 function TWritingRenderer.Duration(const S: TWritingSettings): Double;
-begin Prepare(S); Result:=FTotalDistance/SafeNumber(S.Speed,240,1,10000) end;
+var Speed, MoveSpeed: Double;
+begin
+  Prepare(S); Speed:=SafeNumber(S.Speed,240,1,10000); MoveSpeed:=WritingMoveSpeed(S,Speed);
+  if (Speed=MoveSpeed) or (FTotalMoveDistance=0) then Exit(FTotalDistance/Speed);
+  Result:=(FTotalDistance-FTotalMoveDistance)/Speed+FTotalMoveDistance/MoveSpeed;
+end;
+
+function TWritingRenderer.DistanceAtTime(Time: Double; const S: TWritingSettings): Double;
+var Speed, MoveSpeed, Ratio, Extra, Start, D: Double; L,R,M: Integer; Gap: TCharacterMove;
+begin
+  Speed:=SafeNumber(S.Speed,240,1,10000); D:=SafeNumber(Time,0,0,1E12)*Speed;
+  MoveSpeed:=WritingMoveSpeed(S,Speed);
+  if (MoveSpeed=Speed) or (Length(FCharacterMoves)=0) then Exit(D);
+
+  // 秒を筆記速度相当の距離に換算し、文字間移動の分だけ補正して元の経路距離へ戻す。
+  Ratio:=Speed/MoveSpeed; Extra:=Ratio-1;
+  L:=0; R:=Length(FCharacterMoves);
+  while L<R do
+  begin
+    M:=(L+R) div 2; Gap:=FCharacterMoves[M];
+    if Gap.StartDistance+Gap.PreviousMoveDistance*Extra+Gap.Length*Ratio<=D then L:=M+1 else R:=M;
+  end;
+  if L=Length(FCharacterMoves) then Exit(D-FTotalMoveDistance*Extra);
+  Gap:=FCharacterMoves[L]; Start:=Gap.StartDistance+Gap.PreviousMoveDistance*Extra;
+  if D<Start then Result:=D-Gap.PreviousMoveDistance*Extra
+  else Result:=Gap.StartDistance+(D-Start)/Ratio;
+end;
 
 function TWritingRenderer.PenAt(Distance: Double; out Position: TPointF; out Lift: Double): Boolean;
 var L,R,M: Integer; T: Double; Seg: TPenSegment;
@@ -406,7 +460,7 @@ begin
   GlobalScale:=SafeNumber(S.Scale,100,0,1000)/100;
   Opacity:=1-SafeNumber(S.Transparency,0,0,100)/100;
   if (GlobalScale<=0) or (Opacity<=0) then Exit;
-  D:=SafeNumber(Time,0,0,1E12)*SafeNumber(S.Speed,240,1,10000);
+  D:=DistanceAtTime(Time,S);
   OffsetX:=Width/2+S.X-(FBounds.Left+FBounds.Right)/2*GlobalScale;
   OffsetY:=Height/2+S.Y-(FBounds.Top+FBounds.Bottom)/2*GlobalScale;
   {$IFDEF AW_PROFILE}Stamp:=TStopwatch.GetTimeStamp;{$ENDIF}

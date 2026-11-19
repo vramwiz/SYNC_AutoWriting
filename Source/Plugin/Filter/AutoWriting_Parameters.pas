@@ -20,7 +20,7 @@ uses System.SysUtils, System.Math, System.UITypes, Winapi.Windows, Vcl.Dialogs,
 var
   TextItem: TFILTER_ITEM_TEXT;
   DetailsItem: TFILTER_ITEM_STRING;
-  Tracks: array[0..8] of TFILTER_ITEM_TRACK;
+  Tracks: array[0..9] of TFILTER_ITEM_TRACK;
   PenItem: TFILTER_ITEM_SELECT;
   InkColorItem: TFILTER_ITEM_COLOR;
   PenOptions: array[0..6] of TFILTER_ITEM_SELECT_ITEM;
@@ -38,6 +38,7 @@ begin
   Result.X:=SafeNumber(Tracks[0].Value,0,-16384,16384); Result.Y:=SafeNumber(Tracks[1].Value,0,-16384,16384);
   Result.Scale:=SafeNumber(Tracks[2].Value,100,0,1000); Result.Transparency:=SafeNumber(Tracks[3].Value,0,0,100);
   Result.Speed:=SafeNumber(Tracks[4].Value,240,1,10000);
+  Result.MoveSpeed:=SafeNumber(Tracks[9].Value,0,0,10000);
   Result.PenAngle:=SafeNumber(Tracks[5].Value,35,-180,180);
   Result.LightX:=SafeNumber(Tracks[6].Value,-100,-400,400); Result.LightY:=SafeNumber(Tracks[7].Value,-100,-400,400);
   Result.PenSize:=SafeNumber(Tracks[8].Value,100,30,300)/100;
@@ -47,8 +48,8 @@ end;
 
 procedure OpenSettings(Edit: PEDIT_SECTION; Obj: OBJECT_HANDLE; Effect,Item: PWideChar); cdecl;
 var S,Original,Details,Current,Stored: TWritingSettings; Target: string;
-  Names: array[0..8] of string; OldValues,NewValues: array[0..8] of UTF8String;
-  I,J: Integer; P: PAnsiChar; Updated: array[0..8] of Boolean;
+  Names: array[0..9] of string; OldValues,NewValues: array[0..9] of UTF8String;
+  I,J: Integer; P: PAnsiChar; Updated: array[0..9] of Boolean;
   function GetValue(const Name: string; const Fallback: string): UTF8String;
   var Value: PAnsiChar;
   begin
@@ -63,7 +64,7 @@ begin
     Target:=Effect; S:=ReadAutoWritingSettings; Current:=S;
     Names[0]:='詳細設定'; Names[1]:='表示文字列'; Names[2]:='ペン種類'; Names[3]:='ペン速度'; Names[4]:='ペン角度';
     Names[5]:='光源X'; Names[6]:='光源Y'; Names[7]:='ペンサイズ';
-    Names[8]:='文字色';
+    Names[8]:='文字色'; Names[9]:='ペンの移動速度';
     OldValues[0]:=GetValue(Names[0],SettingsJSON(S));
     OldValues[1]:=GetValue(Names[1],EncodeHostText(S.Text));
     OldValues[2]:=GetValue(Names[2],string(AW_PEN_NAMES[S.Pen]));
@@ -73,11 +74,13 @@ begin
     OldValues[6]:=GetValue(Names[6],FloatToStr(S.LightY,TFormatSettings.Invariant));
     OldValues[7]:=GetValue(Names[7],FloatToStr(S.PenSize*100,TFormatSettings.Invariant));
     OldValues[8]:=GetValue(Names[8],IntToHex(S.InkColor,6));
+    OldValues[9]:=GetValue(Names[9],FloatToStr(S.MoveSpeed,TFormatSettings.Invariant));
     ReadSettingsJSON(string(OldValues[0]),S); S.Text:=DecodeHostText(string(OldValues[1]));
     Stored:=S;
     for I:=Ord(Low(TPenKind)) to Ord(High(TPenKind)) do
       if string(OldValues[2])=string(AW_PEN_NAMES[TPenKind(I)]) then S.Pen:=TPenKind(I);
     S.Speed:=SafeNumber(StrToFloatDef(string(OldValues[3]),S.Speed,TFormatSettings.Invariant),240,1,10000);
+    S.MoveSpeed:=SafeNumber(StrToFloatDef(string(OldValues[9]),Current.MoveSpeed,TFormatSettings.Invariant),0,0,10000);
     S.PenAngle:=SafeNumber(StrToFloatDef(string(OldValues[4]),Current.PenAngle,TFormatSettings.Invariant),35,-180,180);
     S.LightX:=SafeNumber(StrToFloatDef(string(OldValues[5]),Current.LightX,TFormatSettings.Invariant),-100,-400,400);
     S.LightY:=SafeNumber(StrToFloatDef(string(OldValues[6]),Current.LightY,TFormatSettings.Invariant),-100,-400,400);
@@ -96,8 +99,10 @@ begin
     NewValues[6]:=UTF8String(FloatToStr(S.LightY,TFormatSettings.Invariant));
     NewValues[7]:=UTF8String(FloatToStr(S.PenSize*100,TFormatSettings.Invariant));
     NewValues[8]:=UTF8String(IntToHex(S.InkColor,6));
+    NewValues[9]:=UTF8String(FloatToStr(S.MoveSpeed,TFormatSettings.Invariant));
     // ダイアログで変更しなかった数値の中間点やホスト側の表記を保持する。
     if S.Speed=Original.Speed then NewValues[3]:=OldValues[3];
+    if S.MoveSpeed=Original.MoveSpeed then NewValues[9]:=OldValues[9];
     if S.PenAngle=Original.PenAngle then NewValues[4]:=OldValues[4];
     if S.LightX=Original.LightX then NewValues[5]:=OldValues[5];
     if S.LightY=Original.LightY then NewValues[6]:=OldValues[6];
@@ -144,6 +149,7 @@ begin
   AddSelect(PenItem,'ペン種類',Ord(S.Pen),@PenOptions[0]);
   // 保存済み項目名とトラックの割当てを維持し、ペンの種類・速度・サイズ・角度・光源をまとめる。
   AddTrack(Tracks[4],'ペン速度',240,1,10000,1);
+  AddTrack(Tracks[9],'ペンの移動速度',S.MoveSpeed,0,10000,1);
   AddTrack(Tracks[8],'ペンサイズ',100,30,300,0.01);
   AddTrack(Tracks[5],'ペン角度',S.PenAngle,-180,180,0.1);
   AddTrack(Tracks[6],'光源X',S.LightX,-400,400,1); AddTrack(Tracks[7],'光源Y',S.LightY,-400,400,1);

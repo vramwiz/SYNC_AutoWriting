@@ -27,6 +27,7 @@ type
     InkColor: Cardinal;
     PenSize, PenAngle, LiftHeight, LightX, LightY: Double;
     X, Y, Scale, Transparency, Speed: Double;
+    MoveSpeed: Double; // 文字間移動の px/秒。0はSpeedに連動する。
     Pen: TPenKind;
   end;
   TStroke = record

@@ -70,7 +70,7 @@ type
     FWheelRemainder: Integer;
     FPen,FDirection: TComboBox;
     FBold,FItalic: TCheckBox;
-    FSize,FSpeed,FLetter,FLine,FAngle,FLift,FLightX,FLightY: TSpinEdit;
+    FSize,FSpeed,FMoveSpeed,FLetter,FLine,FAngle,FLift,FLightX,FLightY: TSpinEdit;
     FPenSize: TNumberBox;
     FRatios: array[TCharacterKind] of TSpinEdit;
     FChars: TListBox;
@@ -79,7 +79,7 @@ type
     FTimer: TTimer;
     FStart,FPausedAt,FChangedAt,FSingleStart: UInt64;
     FPaused,FUpdating,FDirty,FSinglePlaying,FSpeedChanged,FAngleChanged,FPathChanged: Boolean;
-    FLightXChanged,FLightYChanged,FPenSizeChanged: Boolean;
+    FLightXChanged,FLightYChanged,FPenSizeChanged,FMoveSpeedChanged: Boolean;
     FDragPoint,FSelectedPoint: Integer;
     FDragIndices: TArray<Integer>;
     FViewScale,FViewX,FViewY: Double;
@@ -538,18 +538,20 @@ begin
   FPenSize.SmallStep:=0.01; FPenSize.LargeStep:=1; FPenSize.Value:=S.PenSize*100; FPenSize.OnChangeValue:=Changed;
   FPenSize.ShowHint:=True; FPenSize.Hint:='100で標準、0.01刻み。AviUtl2側の「ペンサイズ」と共通です。';
   FSpeed:=AddSpin(Scroll,'ペン速度（px / 秒）',236,Round(S.Speed),1,10000);
-  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,275,150,22); L.Caption:='筆記具';
-  FPen:=TComboBox.Create(Self); FPen.Parent:=Scroll; FPen.SetBounds(142,272,174,27); FPen.Style:=csDropDownList; FPen.Sorted:=False;
+  FMoveSpeed:=AddSpin(Scroll,'ペンの移動速度（0＝連動）',270,Round(S.MoveSpeed),0,10000);
+  FMoveSpeed.ShowHint:=True; FMoveSpeed.Hint:='次の文字へ移る間の速度（px / 秒）。0でペン速度に連動します。';
+  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,309,150,22); L.Caption:='筆記具';
+  FPen:=TComboBox.Create(Self); FPen.Parent:=Scroll; FPen.SetBounds(142,306,174,27); FPen.Style:=csDropDownList; FPen.Sorted:=False;
   for P in AW_PEN_ORDER do FPen.Items.Add(string(AW_PEN_NAMES[P]));
   FPen.ItemIndex:=PenChoiceIndex(FSettings.Pen); FPen.OnChange:=Changed;
-  FColorButton:=AddButton(Scroll,'文字色を選択',12,305,304,PickColor);
-  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,349,130,22); L.Caption:='文字の向き';
-  FDirection:=TComboBox.Create(Self); FDirection.Parent:=Scroll; FDirection.SetBounds(142,344,174,27);
+  FColorButton:=AddButton(Scroll,'文字色を選択',12,339,304,PickColor);
+  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,383,130,22); L.Caption:='文字の向き';
+  FDirection:=TComboBox.Create(Self); FDirection.Parent:=Scroll; FDirection.SetBounds(142,378,174,27);
   FDirection.Style:=csDropDownList; FDirection.Items.AddStrings(['横書き','縦書き']); FDirection.ItemIndex:=Ord(S.Vertical); FDirection.OnChange:=Changed;
-  FLetter:=PairSpin('字間（%）',12,383,Round(S.LetterGap*100),-50,300);
-  FLine:=PairSpin('行間（%）',174,383,Round(S.LineGap*100),0,400);
-  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,425,300,22); L.Caption:='文字種別のサイズ比率';
-  Y:=455;
+  FLetter:=PairSpin('字間（%）',12,417,Round(S.LetterGap*100),-50,300);
+  FLine:=PairSpin('行間（%）',174,417,Round(S.LineGap*100),0,400);
+  L:=TLabel.Create(Self); L.Parent:=Scroll; L.SetBounds(12,459,300,22); L.Caption:='文字種別のサイズ比率';
+  Y:=489;
   for K:=Low(K) to High(K) do
   begin
     FRatios[K]:=PairSpin(KIND_NAMES[K]+'%',12+(Ord(K) mod 2)*162,Y+(Ord(K) div 2)*34,Round(S.Ratios[K]*100),30,200);
@@ -652,6 +654,7 @@ var K: TCharacterKind;
 begin
   FSettings.Text:=Copy(FMemo.Text,1,AW_MAX_TEXT); FSettings.FontSize:=FSize.Value;
   if FSpeedChanged then FSettings.Speed:=FSpeed.Value;
+  if FMoveSpeedChanged then FSettings.MoveSpeed:=FMoveSpeed.Value;
   FSettings.Pen:=AW_PEN_ORDER[EnsureRange(FPen.ItemIndex,Low(AW_PEN_ORDER),High(AW_PEN_ORDER))];
   FSettings.Vertical:=FDirection.ItemIndex=1; FSettings.ShowPen:=True;
   FSettings.LetterGap:=FLetter.Value/100; FSettings.LineGap:=FLine.Value/100;
@@ -667,6 +670,7 @@ procedure TWritingSettingsForm.Changed(Sender: TObject);
 begin
   if FUpdating then Exit;
   if Sender=FSpeed then FSpeedChanged:=True;
+  if Sender=FMoveSpeed then FMoveSpeedChanged:=True;
   if Sender=FAngle then FAngleChanged:=True;
   if Sender=FLightX then FLightXChanged:=True;
   if Sender=FLightY then FLightYChanged:=True;

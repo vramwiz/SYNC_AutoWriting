@@ -15,7 +15,7 @@ uses System.SysUtils, System.Types, Winapi.Messages;
 type
   PControls = ^TControls;
   TControls = record
-    FontBox,Scroll,Size,PenSize,Angle,Lift,LightX,LightY,Bold,Italic,PenBox,Colour: HWND;
+    FontBox,Scroll,Size,PenSize,Speed,MoveSpeed,Angle,Lift,LightX,LightY,Bold,Italic,PenBox,Colour: HWND;
     CheckCount: Integer;
   end;
 
@@ -33,6 +33,8 @@ begin
     if string(ClassName)='TSpinEdit' then
     begin
       if string(Text)='80' then C.Size:=Wnd;
+      if string(Text)='240' then C.Speed:=Wnd;
+      if string(Text)='315' then C.MoveSpeed:=Wnd;
       if string(Text)='35' then C.Angle:=Wnd;
       if string(Text)='16' then C.Lift:=Wnd;
       if string(Text)='-100' then C.LightX:=Wnd;
@@ -57,6 +59,11 @@ begin
   Check((C.FontBox<>0) and (C.Scroll<>0) and (C.Size<>0),'Font combo and settings scroll found');
   Check(C.CheckCount=2,'Only bold and italic checkboxes remain');
   Check((C.PenBox<>0) and (C.Colour<>0),'Pen selector and ink colour found');
+  Check((C.Speed<>0) and (C.MoveSpeed<>0),'Both speed controls are visible');
+  GetWindowRect(C.Speed,A); GetWindowRect(C.MoveSpeed,B);
+  Check((A.Left=B.Left) and (A.Bottom<=B.Top),'Movement speed has its own row below writing speed');
+  GetWindowRect(C.PenBox,A);
+  Check(B.Bottom<=A.Top,'Movement speed does not overlap the pen selector');
   GetWindowRect(C.PenBox,A); GetWindowRect(C.Colour,B);
   Check((B.Top>=A.Bottom) and (B.Top-A.Bottom<A.Height),'Colour control moved directly below the pen selector');
   Check((GetWindowLong(C.FontBox,GWL_STYLE) and $3)=CBS_DROPDOWNLIST,'Font selector is a list combo');

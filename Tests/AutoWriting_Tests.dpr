@@ -46,7 +46,7 @@ var
   DetailsItem: PFILTER_ITEM_STRING;
   PenItem: PFILTER_ITEM_SELECT;
   InkColorItem: PFILTER_ITEM_COLOR;
-  Tracks: array[0..8] of PFILTER_ITEM_TRACK;
+  Tracks: array[0..9] of PFILTER_ITEM_TRACK;
   Button: PFILTER_ITEM_BUTTON;
   Video: TFILTER_PROC_VIDEO; Obj: TOBJECT_INFO; Scene: TSCENE_INFO;
   Captured,HostInput: TWritingPixels;
@@ -55,13 +55,13 @@ var
   SetCount,Tests: Integer;
   DialogHandle,MemoHandle,PageHandle,PenHandle,AngleHandle,ApplyHandle: HWND;
   LightXHandle,LightYHandle: HWND;
-  PenSizeHandle: HWND;
+  PenSizeHandle,MoveSpeedHandle: HWND;
   ChangeAngleInDialog,UILayoutOnly: Boolean;
   PreviewSurface,EditorSurface: HWND;
   UITimer: UINT_PTR;
   UIStage,UICount,UIEdits,DialogPenChoice,DialogInitialPenChoice: Integer;
   UIError: string;
-  UIValues: array[0..8] of UTF8String;
+  UIValues: array[0..9] of UTF8String;
   EditingTimer: UINT_PTR;
   EditingStage,EditingTicks,EditingInitialCount: Integer;
   EditingStrokeList: HWND;
@@ -110,7 +110,7 @@ begin
   Tracks[0]^.Value:=S.X; Tracks[1]^.Value:=S.Y; Tracks[2]^.Value:=S.Scale;
   Tracks[3]^.Value:=S.Transparency; Tracks[4]^.Value:=S.Speed; Tracks[5]^.Value:=S.PenAngle; PenItem^.Value:=PenChoiceValue(S.Pen);
   Tracks[6]^.Value:=S.LightX; Tracks[7]^.Value:=S.LightY;
-  Tracks[8]^.Value:=S.PenSize*100;
+  Tracks[8]^.Value:=S.PenSize*100; Tracks[9]^.Value:=S.MoveSpeed;
   InkColorItem^.R:=Byte(S.InkColor shr 16); InkColorItem^.G:=Byte(S.InkColor shr 8);
   InkColorItem^.B:=Byte(S.InkColor);
 end;
@@ -162,20 +162,22 @@ begin
     if Name='拡大率' then Tracks[2]:=PFILTER_ITEM_TRACK(P^);
     if Name='透明度' then Tracks[3]:=PFILTER_ITEM_TRACK(P^);
     if Name='ペン速度' then Tracks[4]:=PFILTER_ITEM_TRACK(P^);
+    if Name='ペンの移動速度' then Tracks[9]:=PFILTER_ITEM_TRACK(P^);
     if Name='ペン角度' then Tracks[5]:=PFILTER_ITEM_TRACK(P^);
     if Name='光源X' then Tracks[6]:=PFILTER_ITEM_TRACK(P^);
     if Name='光源Y' then Tracks[7]:=PFILTER_ITEM_TRACK(P^);
     if Name='ペンサイズ' then Tracks[8]:=PFILTER_ITEM_TRACK(P^);
     Inc(P);
   end;
-  Check(N=17,'Expected 13 visible parameters, two pen group markers, hidden details and hiding rule');
+  Check(N=18,'Expected 14 visible parameters, two pen group markers, hidden details and hiding rule');
   Check((TextItem<>nil) and (DetailsItem<>nil) and (PenItem<>nil) and (Button<>nil),'Missing parameters');
   Check((InkColorItem<>nil) and (InkColorItem^.R=255) and (InkColorItem^.G=255) and
     (InkColorItem^.B=255),'Host ink color must be registered with a white default');
   Check((SizeOf(TFILTER_ITEM_TEXT)=3*SizeOf(Pointer)) and (string(TextItem^.ItemType)='text'),
     'Host text input must use the SDK multiline text item');
-  for I:=0 to 8 do Check(Tracks[I]<>nil,'Missing track');
+  for I:=Low(Tracks) to High(Tracks) do Check(Tracks[I]<>nil,'Missing track');
   Check((Tracks[8]^.Value=100) and (Abs(Tracks[8]^.Step-0.01)<1E-12),'Pen size must default to 100 with step 0.01');
+  Check((Tracks[9]^.Value=0) and (Tracks[9]^.Step=1),'Movement speed must follow writing speed by default');
   Check(Assigned(Button^.Callback2),'Settings callback missing');
   Check(PenItem^.Value=2,'Existing fountain default ID must stay 2'); Choice:=Pointer(PenItem^.List);
   for I:=0 to 5 do begin
@@ -642,7 +644,7 @@ var S: TWritingSettings; DC: HDC; Font: HFONT; Old: HGDIOBJ;
   GM: TGlyphMetrics; Matrix: TMat2; Bytes: TBytes; Size: Cardinal; W,H,X,Y,I,Stride,Expected: Integer;
   Pixels: TWritingPixels; Sample: string;
 begin
-  for Sample in TArray<string>.Create('永','あ','お','ぬ','A','i','シ') do
+  for Sample in TArray<string>.Create('永','あ','お','ぬ','A','i','シ','き','さ','a','g') do
   begin
   S:=DefaultWritingSettings; S.Text:=Sample; S.FontName:='ＭＳ ゴシック'; S.FontSize:=128;
   S.ShowPen:=False; S.Ratios[CharacterKind(Sample)]:=1; Configure(S);
@@ -760,6 +762,7 @@ begin
   if string(Item)='表示文字列' then Result:=PAnsiChar(UIValues[1]);
   if string(Item)='ペン種類' then Result:=PAnsiChar(UIValues[2]);
   if string(Item)='ペン速度' then Result:=PAnsiChar(UIValues[3]);
+  if string(Item)='ペンの移動速度' then Result:=PAnsiChar(UIValues[9]);
   if string(Item)='ペン角度' then Result:=PAnsiChar(UIValues[4]);
   if string(Item)='光源X' then Result:=PAnsiChar(UIValues[5]);
   if string(Item)='光源Y' then Result:=PAnsiChar(UIValues[6]);
@@ -776,6 +779,7 @@ begin
   if string(Item)='表示文字列' then begin UIValues[1]:=UTF8String(Value); TextBacking:=DecodeHostText(string(UIValues[1])); TextItem^.Value:=PChar(TextBacking); Result:=True end;
   if string(Item)='ペン種類' then begin UIValues[2]:=UTF8String(Value); Result:=True end;
   if string(Item)='ペン速度' then begin UIValues[3]:=UTF8String(Value); Result:=True end;
+  if string(Item)='ペンの移動速度' then begin UIValues[9]:=UTF8String(Value); Result:=True end;
   if string(Item)='ペン角度' then begin UIValues[4]:=UTF8String(Value); Result:=True end;
   if string(Item)='光源X' then begin UIValues[5]:=UTF8String(Value); Result:=True end;
   if string(Item)='光源Y' then begin UIValues[6]:=UTF8String(Value); Result:=True end;
@@ -802,6 +806,7 @@ begin
   if string(Name)='TPageControl' then PageHandle:=Wnd;
   if (string(Name)='TComboBox') and (SendMessage(Wnd,CB_GETCOUNT,0,0)=6) then PenHandle:=Wnd;
   if (string(Name)='TSpinEdit') and (string(Text)='35') then AngleHandle:=Wnd;
+  if (string(Name)='TSpinEdit') and (string(Text)='315') then MoveSpeedHandle:=Wnd;
   if (string(Name)='TSpinEdit') and (string(Text)='-100') then LightXHandle:=Wnd;
   if (string(Name)='TSpinEdit') and (string(Text)='-140') then LightYHandle:=Wnd;
   if string(Name)='TNumberBox' then PenSizeHandle:=Wnd;
@@ -929,8 +934,12 @@ begin
         SendMessage(PenHandle,CB_SETCURSEL,DialogPenChoice,0);
         SendMessage(GetParent(PenHandle),WM_COMMAND,(GetDlgCtrlID(PenHandle) and $FFFF) or (CBN_SELCHANGE shl 16),LPARAM(PenHandle));
         Check(AngleHandle<>0,'Missing pen-angle control');
+        Check(MoveSpeedHandle<>0,'Missing movement speed control');
         if ChangeAngleInDialog then
         begin
+          SendMessage(MoveSpeedHandle,WM_SETTEXT,0,LPARAM(PChar('720')));
+          SendMessage(GetParent(MoveSpeedHandle),WM_COMMAND,
+            (GetDlgCtrlID(MoveSpeedHandle) and $FFFF) or (EN_CHANGE shl 16),LPARAM(MoveSpeedHandle));
           SendMessage(AngleHandle,WM_SETTEXT,0,LPARAM(PChar('-20')));
           SendMessage(GetParent(AngleHandle),WM_COMMAND,
             (GetDlgCtrlID(AngleHandle) and $FFFF) or (EN_CHANGE shl 16),LPARAM(AngleHandle));
@@ -1002,11 +1011,11 @@ begin
   begin
   if UILayoutOnly and (Mode>2) then Break;
   DialogHandle:=0; MemoHandle:=0; PageHandle:=0; PenHandle:=0; AngleHandle:=0;
-  LightXHandle:=0; LightYHandle:=0; PenSizeHandle:=0;
+  LightXHandle:=0; LightYHandle:=0; PenSizeHandle:=0; MoveSpeedHandle:=0;
   ApplyHandle:=0; PreviewSurface:=0; EditorSurface:=0; UIStage:=0; UICount:=0; UIEdits:=0; UIError:='';
   ChangeAngleInDialog:=(Mode=1) and not UILayoutOnly;
   DialogPenChoice:=1; if Mode=2 then DialogPenChoice:=5 else if Mode=3 then DialogPenChoice:=4;
-  S:=DefaultWritingSettings; S.Speed:=240.25; S.PenAngle:=35.25;
+  S:=DefaultWritingSettings; S.Speed:=240.25; S.MoveSpeed:=315.25; S.PenAngle:=35.25;
   DialogInitialPenChoice:=2;
   if UILayoutOnly and (Mode>0) then begin S.ShowPen:=False; DialogInitialPenChoice:=5 end;
   Configure(S);
@@ -1015,13 +1024,14 @@ begin
   UIValues[2]:='万年筆'; UIValues[3]:='240.25,480,1'; UIValues[4]:='35.25,70,1'; FillChar(Edit,SizeOf(Edit),0);
   UIValues[5]:='-100.25,180,1'; UIValues[6]:='-140.25,160,1'; UIValues[7]:='100.005,200,1';
   UIValues[8]:=UTF8String(IntToHex(S.InkColor,6));
+  UIValues[9]:='315.25,600,1';
   Edit.GetObjectItemValue:=UIGet; Edit.SetObjectItemValue:=UISet;
   UITimer:=SetTimer(0,0,250,@UITick);
   Check(UITimer<>0,'Cannot start UI test timer');
   try Button^.Callback2(@Edit,Pointer(1234),'自動筆記:2','設定')
   finally if UITimer<>0 then KillTimer(0,UITimer) end;
   Check(UIError='','Settings UI failure: '+UIError); Check(UIStage=5,'Settings UI did not finish');
-  Check(UIEdits=2+Ord(ChangeAngleInDialog)*5+Ord(UILayoutOnly),Format('Only changed host items should be saved (mode %d, writes %d)',[Mode,UIEdits]));
+  Check(UIEdits=2+Ord(ChangeAngleInDialog)*6+Ord(UILayoutOnly),Format('Only changed host items should be saved (mode %d, writes %d)',[Mode,UIEdits]));
   if UILayoutOnly then
   begin
     R:=DefaultWritingSettings; ReadSettingsJSON(string(UIValues[0]),R);
@@ -1033,11 +1043,13 @@ begin
   Check(string(UIValues[2])=string(AW_PEN_NAMES[AW_PEN_ORDER[DialogPenChoice]]),'UI pen not sent to host');
   Check(string(UIValues[3])='240.25,480,1','Unedited animated fractional speed was overwritten');
   if not ChangeAngleInDialog then begin
+    Check(string(UIValues[9])='315.25,600,1','Unedited animated movement speed was overwritten');
     Check(string(UIValues[4])='35.25,70,1','Unedited animated fractional angle was overwritten');
     Check((string(UIValues[5])='-100.25,180,1') and (string(UIValues[6])='-140.25,160,1'),'Unedited light animation was overwritten');
     Check(string(UIValues[7])='100.005,200,1','Unedited fractional pen size animation was overwritten');
   end
   else begin
+    Check(string(UIValues[9])='720','Edited movement speed not sent to its own host track');
     Check(string(UIValues[4])='-20','UI angle not sent to host');
     R:=DefaultWritingSettings; ReadSettingsJSON(string(UIValues[0]),R);
     Check(R.PenAngle=-20,'Changed angle missing from detailed settings');
